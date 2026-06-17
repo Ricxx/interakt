@@ -1,0 +1,17 @@
+{
+  "name": "ces",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:server": "pnpm --filter @ces/server dev",
+    "dev:web": "pnpm --filter @ces/desktop dev",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "db:generate": "pnpm --filter @ces/server db:generate",
+    "db:migrate": "pnpm --filter @ces/server db:migrate",
+    "db:seed": "pnpm --filter @ces/server db:seed",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": { "node": ">=22" }
+}

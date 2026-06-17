@@ -1,0 +1,36 @@
+# Dev infra only: the two databases + object storage.
+# In dev you run the server and web app on the host (pnpm dev).
+# Containerizing the server + Caddy TLS is a deploy-time concern, not now.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ces
+      POSTGRES_PASSWORD: ces
+      POSTGRES_DB: ces
+    ports: ["5442:5432"] # 5442 to avoid clashing with a local Postgres on 5432
+    volumes: ["pg_app:/var/lib/postgresql/data"]
+
+  # Separate database with separate credentials = the identity vault (see CLAUDE.md).
+  postgres_vault:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: vault
+      POSTGRES_PASSWORD: vault
+      POSTGRES_DB: vault
+    ports: ["5443:5432"]
+    volumes: ["pg_vault:/var/lib/postgresql/data"]
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ces
+      MINIO_ROOT_PASSWORD: ces-secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["minio:/data"]
+
+volumes:
+  pg_app:
+  pg_vault:
+  minio:
