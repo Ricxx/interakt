@@ -31,7 +31,7 @@ export function BoardDetailPage() {
   );
 
   if (data.board.type === "NOTICE") {
-    return <div className="max-w-2xl">{header}<NoticeBoard boardId={id} posts={data.posts ?? []} /></div>;
+    return <div className="max-w-2xl">{header}<NoticeBoard boardId={id} canPin={data.board.canPin} posts={data.posts ?? []} /></div>;
   }
 
   const ideas = [...(data.ideas ?? [])].sort((a, b) => (sort === "liked" ? b.likes - a.likes : sort === "hot" ? b.comments - a.comments : b.createdAt.localeCompare(a.createdAt)));

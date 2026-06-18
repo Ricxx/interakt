@@ -1,5 +1,25 @@
+# Dependencies & build output
 node_modules/
 dist/
+*.tsbuildinfo
+
+# Tauri (Rust build output + generated files) — Cargo.lock stays tracked
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# Env / secrets — keep .env.example tracked
 .env
+.env.*
+!.env.example
 *.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS / editor cruft
 .DS_Store
+Thumbs.db
+.idea/
+*.swp

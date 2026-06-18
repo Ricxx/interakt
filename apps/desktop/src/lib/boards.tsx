@@ -3,8 +3,8 @@ import { api } from "./api";
 import type { Idea, IdeaComment } from "./sessions";
 
 export type BoardSummary = { id: string; type: string; title: string; description: string | null; scope: string; items: number };
-export type NoticePost = { id: string; title: string; body: string | null; authorName: string; activeUntil: string | null; archived: boolean; comments: number; createdAt: string };
-export type BoardDetail = { board: { id: string; type: string; title: string; description: string | null; scope: string }; ideas?: Idea[]; posts?: NoticePost[] };
+export type NoticePost = { id: string; title: string; body: string | null; authorName: string; activeUntil: string | null; pinned: boolean; archived: boolean; comments: number; createdAt: string };
+export type BoardDetail = { board: { id: string; type: string; title: string; description: string | null; scope: string; canPin: boolean }; ideas?: Idea[]; posts?: NoticePost[] };
 
 export function useBoards() {
   return useQuery({ queryKey: ["boards"], queryFn: () => api<{ boards: BoardSummary[] }>("/api/boards") });
@@ -41,6 +41,13 @@ export function usePostNotice(boardId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (v: { title: string; body?: string; activeUntil?: string }) => api(`/api/boards/${boardId}/posts`, { method: "POST", body: JSON.stringify(v) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["board", boardId] }),
+  });
+}
+export function usePinNotice(boardId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (postId: string) => api(`/api/boards/${boardId}/posts/${postId}/pin`, { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["board", boardId] }),
   });
 }

@@ -5,6 +5,7 @@ import { PageHeader } from "../../ui/page-header";
 import { Card } from "../../ui/card";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import { RefText } from "../../lib/ref-text";
 
 const ACTION_LABEL: Record<string, string> = {
   created: "created the list",
@@ -47,7 +48,7 @@ function ItemRow({ item, listId, closed, onToggle, toggling }: { item: ListItem;
         <div className="ml-7 mt-2 space-y-2">
           {(data?.comments ?? []).map((c) => (
             <div key={c.id} className="text-sm">
-              <span className="font-medium">{c.name}</span> <span className="text-muted">{c.body}</span>
+              <span className="font-medium">{c.name}</span> <span className="text-muted"><RefText text={c.body} /></span>
             </div>
           ))}
           <form onSubmit={submit} className="flex items-center gap-2">
@@ -68,6 +69,7 @@ export function ListDetailPage() {
   const toggleItem = useToggleItem(id);
   const toggleClose = useToggleClose(id);
   const [text, setText] = useState("");
+  const [copied, setCopied] = useState(false);
 
   if (isLoading) return <p className="p-4 text-sm text-muted">Loading…</p>;
   if (!data) return <p className="p-4 text-sm text-muted">List not found.</p>;
@@ -86,9 +88,14 @@ export function ListDetailPage() {
       <button onClick={() => navigate("/lists")} className="mb-3 text-sm text-primary hover:underline">← All lists</button>
       <div className="flex items-start justify-between">
         <PageHeader title={list.title} subtitle={`${list.scope} · ${items.filter((i) => i.done).length}/${items.length} done${list.recurrence !== "NONE" ? ` · ${list.recurrence.toLowerCase()}` : ""}${closed ? " · closed" : ""}`} />
-        <Button variant="ghost" onClick={() => toggleClose.mutate(undefined)} disabled={toggleClose.isPending}>
-          {closed ? "Reopen" : "Close"}
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="ghost" onClick={() => { navigator.clipboard?.writeText(`${location.origin}/lists/${list.id}`); setCopied(true); }} title="Copy a link to paste into chat or a comment">
+            {copied ? "Copied" : "Copy link"}
+          </Button>
+          <Button variant="ghost" onClick={() => toggleClose.mutate(undefined)} disabled={toggleClose.isPending}>
+            {closed ? "Reopen" : "Close"}
+          </Button>
+        </div>
       </div>
 
       <Card className="mb-6">

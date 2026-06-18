@@ -38,6 +38,18 @@ export function useMyTasks() {
   return useQuery({ queryKey: ["my-tasks"], queryFn: () => api<{ tasks: MyTask[] }>("/api/tasks/mine") });
 }
 
+// "N task updates by others since you looked" → drives the To-do nav badge.
+export function useTasksUnread() {
+  return useQuery({ queryKey: ["tasks-unread"], queryFn: () => api<{ count: number }>("/api/tasks/unread") });
+}
+export function useMarkTasksRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api("/api/tasks/read", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tasks-unread"] }),
+  });
+}
+
 export type TaskEvent = { id: string; actorName: string; action: string; taskKey: string; relatedKey: string | null; at: string };
 
 export function useTaskFeed(limit?: number) {

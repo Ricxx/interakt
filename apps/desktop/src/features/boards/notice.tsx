@@ -1,18 +1,19 @@
 import { useState } from "react";
-import { type NoticePost, useAddNoticeComment, useNoticeComments, usePostNotice } from "../../lib/boards";
+import { type NoticePost, useAddNoticeComment, useNoticeComments, usePinNotice, usePostNotice } from "../../lib/boards";
 import { Button } from "../../ui/button";
 import { Card } from "../../ui/card";
 import { Input } from "../../ui/input";
 
-export function NoticeBoard({ boardId, posts }: { boardId: string; posts: NoticePost[] }) {
+export function NoticeBoard({ boardId, canPin, posts }: { boardId: string; canPin: boolean; posts: NoticePost[] }) {
   const post = usePostNotice(boardId);
   const [adding, setAdding] = useState(false);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [until, setUntil] = useState("");
 
-  const active = posts.filter((p) => !p.archived);
-  const archived = posts.filter((p) => p.archived);
+  const pinned = posts.filter((p) => p.pinned);
+  const active = posts.filter((p) => !p.pinned && !p.archived);
+  const archived = posts.filter((p) => !p.pinned && p.archived);
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -44,16 +45,23 @@ export function NoticeBoard({ boardId, posts }: { boardId: string; posts: Notice
         </form>
       )}
 
+      {pinned.length > 0 && (
+        <div className="mb-3 space-y-2">
+          <div className="text-xs font-semibold text-muted">📌 Pinned</div>
+          {pinned.map((p) => <NoticeCard key={p.id} boardId={boardId} canPin={canPin} post={p} />)}
+        </div>
+      )}
+
       <div className="space-y-2">
-        {active.length === 0 && <p className="text-sm text-muted">No active notices.</p>}
-        {active.map((p) => <NoticeCard key={p.id} boardId={boardId} post={p} />)}
+        {active.length === 0 && pinned.length === 0 && <p className="text-sm text-muted">No active notices.</p>}
+        {active.map((p) => <NoticeCard key={p.id} boardId={boardId} canPin={canPin} post={p} />)}
       </div>
 
       {archived.length > 0 && (
         <div className="mt-4">
           <div className="mb-2 text-xs font-semibold text-muted">Archived</div>
           <div className="space-y-2 opacity-60">
-            {archived.map((p) => <NoticeCard key={p.id} boardId={boardId} post={p} />)}
+            {archived.map((p) => <NoticeCard key={p.id} boardId={boardId} canPin={canPin} post={p} />)}
           </div>
         </div>
       )}
@@ -61,14 +69,18 @@ export function NoticeBoard({ boardId, posts }: { boardId: string; posts: Notice
   );
 }
 
-function NoticeCard({ boardId, post }: { boardId: string; post: NoticePost }) {
+function NoticeCard({ boardId, canPin, post }: { boardId: string; canPin: boolean; post: NoticePost }) {
   const [open, setOpen] = useState(false);
   const { data } = useNoticeComments(boardId, post.id, open);
   const addComment = useAddNoticeComment(boardId, post.id);
+  const pin = usePinNotice(boardId);
   const [text, setText] = useState("");
   return (
-    <div className="rounded-lg border border-border p-3">
-      <div className="text-sm font-medium">{post.title}</div>
+    <div className={`rounded-lg border p-3 ${post.pinned ? "border-primary/50 bg-primary/5" : "border-border"}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-sm font-medium">{post.pinned && "📌 "}{post.title}</div>
+        {canPin && <button onClick={() => pin.mutate(post.id)} disabled={pin.isPending} className="shrink-0 text-xs text-muted hover:text-primary">{post.pinned ? "Unpin" : "Pin"}</button>}
+      </div>
       {post.body && <div className="whitespace-pre-wrap text-sm text-muted">{post.body}</div>}
       <div className="mt-0.5 text-xs text-muted">
         by {post.authorName}

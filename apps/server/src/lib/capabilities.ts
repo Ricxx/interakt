@@ -10,20 +10,25 @@ export const CAPABILITIES = [
   { key: "session.schedule", category: "Sessions", label: "Schedule sessions", scoped: false },
   { key: "session.host", category: "Sessions", label: "Host sessions", scoped: false },
   { key: "session.invite", category: "Sessions", label: "Invite people / groups to sessions", scoped: true },
-  { key: "activity.start", category: "Activities", label: "Start activities", scoped: false },
-  { key: "activity.manage", category: "Activities", label: "Run / close / reveal activities", scoped: false },
+  // NB: activities are governed in-session by session roles (host/co-host/activity-admin) +
+  // session.schedule (who can create sessions) — not by an org capability. No activity.* caps.
   { key: "task.create", category: "Tasks", label: "Create & assign tasks", scoped: false },
   { key: "task.manage", category: "Tasks", label: "Manage the team task board", scoped: true },
   { key: "repo.view", category: "Repository", label: "View repository", scoped: false },
   { key: "repo.post", category: "Repository", label: "Post to repository", scoped: true },
   { key: "repo.post.links", category: "Repository", label: "Post links (not just text)", scoped: false },
   { key: "repo.approve", category: "Repository", label: "Approve repository items", scoped: true },
-  { key: "pin", category: "Repository", label: "Pin notices to boards", scoped: true },
+  { key: "pin", category: "Boards", label: "Pin notices to boards", scoped: true },
+  { key: "list.create", category: "Lists", label: "Create lists", scoped: false },
+  { key: "list.distribute", category: "Lists", label: "Share lists (reach sets how wide)", scoped: true },
+  { key: "survey.create", category: "Surveys", label: "Create surveys", scoped: false },
+  { key: "survey.distribute", category: "Surveys", label: "Distribute surveys (reach sets how wide)", scoped: true },
+  { key: "recognition.award", category: "Recognition", label: "Issue official awards (dept/team/org-wide)", scoped: true },
   { key: "member.approve", category: "Governance", label: "Approve members & requests", scoped: false },
   { key: "permission.grant", category: "Governance", label: "Manage permission groups", scoped: false },
 ] as const;
 
-export const CAPABILITY_CATEGORIES = ["Sessions", "Activities", "Tasks", "Repository", "Governance"] as const;
+export const CAPABILITY_CATEGORIES = ["Sessions", "Tasks", "Repository", "Boards", "Lists", "Surveys", "Recognition", "Governance"] as const;
 
 export const SCOPES = ["SELF", "DEPT", "DIVISION", "ORG"] as const;
 type Scope = (typeof SCOPES)[number];
@@ -99,4 +104,14 @@ export async function can(user: { id: string; tenantId: string; role: string; no
   const root = await scopeRoot(user.tenantId, myNode, caps.get(capability) ?? "SELF");
   if (!root) return false;
   return (await ancestorNodes(user.tenantId, targetNodeId)).has(root); // target is in root's subtree
+}
+
+// Does the user hold `capability` at least at `level` reach? Used for non-node targets like
+// "org-wide" where there's no single node to resolve against. Admins always; boolean caps count.
+export async function hasScope(user: { id: string; role: string }, capability: string, level: Scope): Promise<boolean> {
+  if (user.role === "TENANT_ADMIN") return true;
+  const caps = await userCaps(user.id);
+  if (!caps.has(capability)) return false;
+  const held = caps.get(capability);
+  return held == null ? true : RANK[held] >= RANK[level];
 }

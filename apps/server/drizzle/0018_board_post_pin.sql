@@ -1,0 +1,1 @@
+ALTER TABLE "board_posts" ADD COLUMN "pinned" boolean DEFAULT false NOT NULL;

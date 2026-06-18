@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, ne, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "../../db/client.js";
-import { activities, orgNodes, sessions, sessionTasks, taskEvents, users } from "../../db/schema.js";
+import { activities, orgNodes, sessions, sessionTasks, taskEvents, taskReads, users } from "../../db/schema.js";
 import { requireAuth } from "../../auth.js";
 import { taskKey } from "./review.js";
 import { recordTaskEvent } from "./events.js";
@@ -168,5 +168,29 @@ export function taskRoutes(app: FastifyInstance) {
       .orderBy(desc(taskEvents.createdAt))
       .limit(limit);
     return { events: rows.map((r) => ({ id: r.id, actorName: r.actorName, action: r.action, taskKey: r.taskKey, relatedKey: r.relatedKey, at: r.createdAt.toISOString() })) };
+  });
+
+  // Count of task changes by OTHERS in your units since you last opened the board (nav badge).
+  app.get("/api/tasks/unread", { preHandler: requireAuth }, async (req) => {
+    const me = req.currentUser!;
+    const mine = await scopeNodes(me.tenantId, await myNodeId(me.id));
+    if (!mine.size) return { count: 0 };
+    const [read] = await db.select({ at: taskReads.lastSeenAt }).from(taskReads).where(eq(taskReads.userId, me.id));
+    const since = read?.at ?? new Date(0);
+    const [row] = await db
+      .select({ c: count() })
+      .from(taskEvents)
+      .where(and(inArray(taskEvents.listNodeId, [...mine]), ne(taskEvents.actorId, me.id), gt(taskEvents.createdAt, since)));
+    return { count: row?.c ?? 0 };
+  });
+
+  // Opening the board clears the badge.
+  app.post("/api/tasks/read", { preHandler: requireAuth }, async (req) => {
+    const me = req.currentUser!;
+    await db
+      .insert(taskReads)
+      .values({ userId: me.id })
+      .onConflictDoUpdate({ target: taskReads.userId, set: { lastSeenAt: new Date() } });
+    return { ok: true };
   });
 }

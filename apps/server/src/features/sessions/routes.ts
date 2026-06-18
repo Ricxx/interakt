@@ -13,6 +13,11 @@ import { listIdeas } from "../../lib/ideas.js";
 import { buildReviewPayload } from "../tasks/review.js";
 import { buildTriviaPayload, triviaReveal } from "../trivia/payload.js";
 import { buildPollPayload, pollResults } from "../poll/payload.js";
+import { buildWordcloudPayload, wordcloudResults } from "../wordcloud/payload.js";
+import { buildStrawsPayload, strawsResults } from "../straws/payload.js";
+import { buildTeamsPayload, teamsResults } from "../teams/payload.js";
+import { buildSurveyActivityPayload } from "../surveys/respond.js";
+import { buildQuizPayload, quizResults } from "../quizzes/game.js";
 import { recordAudit } from "../../lib/audit.js";
 import { can, isGoverned } from "../../lib/capabilities.js";
 
@@ -532,6 +537,26 @@ async function currentActivity(sessionId: string, meId: string, isHost: boolean,
     return { ...base, poll: await buildPollPayload(activity, meId, canControl) };
   }
 
+  if (activity.type === "WORDCLOUD") {
+    return { ...base, wordcloud: await buildWordcloudPayload(activity, meId) };
+  }
+
+  if (activity.type === "DRAW_STRAWS") {
+    return { ...base, straws: await buildStrawsPayload(activity.id, meId) };
+  }
+
+  if (activity.type === "TEAM_SELECT") {
+    return { ...base, teams: await buildTeamsPayload(activity, meId) };
+  }
+
+  if (activity.type === "SURVEY") {
+    return { ...base, survey: activity.config?.surveyId ? await buildSurveyActivityPayload(activity.config.surveyId, meId) : null };
+  }
+
+  if (activity.type === "QUIZ") {
+    return { ...base, quiz: await buildQuizPayload(activity, meId, canControl) };
+  }
+
   if (activity.type === "RPS") {
     const cfg = activity.config ?? {};
     const rounds = await db.select().from(rpsRounds).where(eq(rpsRounds.activityId, activity.id)).orderBy(rpsRounds.roundNo);
@@ -681,6 +706,14 @@ async function pastActivities(sessionId: string, meId: string) {
     if (a.type === "TRIVIA") trivia = await triviaReveal(a.id);
     let poll = undefined;
     if (a.type === "POLL") poll = await pollResults(a);
+    let wordcloud = undefined;
+    if (a.type === "WORDCLOUD") wordcloud = await wordcloudResults(a);
+    let straws = undefined;
+    if (a.type === "DRAW_STRAWS") straws = await strawsResults(a.id);
+    let teams = undefined;
+    if (a.type === "TEAM_SELECT") teams = await teamsResults(a);
+    let quiz = undefined;
+    if (a.type === "QUIZ") quiz = await quizResults(a.id);
     let rps = undefined;
     if (a.type === "RPS") {
       const cfg = a.config ?? {};
@@ -704,7 +737,7 @@ async function pastActivities(sessionId: string, meId: string) {
         agreementText: cfg.agreementText ?? "",
       };
     }
-    out.push({ id: a.id, type: a.type, title: a.title, startedByName: a.startedByName ?? null, endedAt: a.endedAt?.toISOString() ?? null, picks, nomination, brainstorm, rps, tasks, trivia, poll });
+    out.push({ id: a.id, type: a.type, title: a.title, startedByName: a.startedByName ?? null, endedAt: a.endedAt?.toISOString() ?? null, picks, nomination, brainstorm, rps, tasks, trivia, poll, wordcloud, straws, teams, quiz });
   }
   return out;
 }

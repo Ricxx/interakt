@@ -123,25 +123,95 @@ Boards, lists, and todos are all "a scoped collection of items people act on." B
 shared machinery ONCE, reuse three times — don't triplicate scoping/nav/badges.
 - **1.5a — Scoping ✅ DONE for lists** — `scopeKind` (ALL/NODE/GROUP) + `scopeId`, default
   to the creator's department; visibility == access; shared `canSeeScoped()`/`scopeLabel()`
-  in `lib/scopeAccess.ts` (boards now reuse it too). Next: give **todos** the GROUP option
-  (they already have node grouping via `listNodeId`) so committee task-boards work.
+  in `lib/scopeAccess.ts` (boards now reuse it too).
+  - **Todos decision:** the kanban To-do has NO named-board concept (groups only by org unit),
+    so "named committee/dept todo-boards" = the deferred Trello feature. **Lists already covers
+    that need** (a scoped, grouped, badged collection of checkable to-dos). So we DON'T add
+    named-boards or GROUP scope to the kanban — Lists is the named-collection tool; the kanban
+    stays the simple assigned-work board. (Honors "quick simple, not a PM tool".)
 - **1.5b — Grouped index + search** — group lists/todos by scope on the index (sections:
   *My committees* / *My department* / *Org-wide*) with a client-side search box and back
   buttons. Pure presentation over the scope model.
 - **1.5c — Change badges** — per-user read tracking (reuse the `sessionChatReads.lastReadAt`
   pattern: a `last_seen_at` per user per list/board) → "updated since you looked" badges,
   reused across lists, todos, boards. One mechanism, not three.
-- **1.5d — References / previews** — link to a list/todo/item from comments & session chat.
-  Safe by construction: links resolve through the authz'd endpoint (404 if no access).
-  Inline title previews MUST be server-rendered + permission-checked (never leak a title to
-  someone outside the scope); no-access renders as "a list you can't access." Optional
-  @mention autocomplete is a later add-on once previews exist.
+- **1.5d — References / previews ✅ DONE (lists)** — paste a list link (`/lists/<id>`) into a
+  comment or session chat and it renders as a permission-checked chip via `POST /api/refs/resolve`
+  (`lib/scopeAccess` → title only if accessible; otherwise `accessible:false`, null title — leak-safe).
+  Shared `<RefText>` component wired into session chat + list-item comments; "Copy link" button on
+  the list header. Todos deferred (no stable detail URL yet); @mention autocomplete is a later add-on.
 
 > **On "epics" / hierarchy (decided):** Don't add an Epic entity or multi-level nesting to
 > todos. The grouping is already covered by **scope** (a committee/dept task-board IS the
 > "epic") and the existing one-level task `parentId` (a parent task with sub-tasks). A board
 > is a collection surface, not a work-item — keep them distinct. Add depth only on a real
 > second caller, never speculatively.
+
+### Epic S — Surveys ✅ BUILT (S1–S7)  [superseded old 2d + Epic 6]
+Shipped: builder + sections + collaborators + edit log (S1/S1.5), distribute by scope + org-except
++ lifecycle (S2), paged/resumable responses with Named/Anonymous + "Other" capture (S3), results +
+CSV with k-anonymity (S4/S5), in-meeting SURVEY activity (S6), and the Insights tab — published
+analysis/resolutions linked to a survey (S7). Anonymous = no identity (pseudonym + client ticket),
+coarse day timestamps, k≥5 on results. Original slice plan kept below for reference.
+
+### Epic S — Surveys (form builder → distribute → respond → insights)  [supersedes old 2d + Epic 6]
+A full survey system, built in slices. Reuses: `canSeeScoped` (distribution), the activity
+engine (in-meeting launch), the poll CSV pattern (export), read-tracking (assigned/complete).
+Two surfaces: **Create** (build/manage) and **Complete** (fill); then **Past** + **Insights**.
+- **S1 — Builder + schema** — `surveys` + `survey_questions` (types: single/multi/text/scale;
+  options; required; allowOther; page). Author a DRAFT, edit freely, **copy** a survey. Create section.
+- **S2 — Distribute + lifecycle** — scope (ALL/NODE/GROUP + "org-except" exclusions); DRAFT→OPEN
+  →PAUSED→CLOSED; live response count. The Complete section (surveys assigned to me).
+- **S3 — Respond** — paged form (x/page), **resumable** (save progress per page), submit; capture
+  "Other" free-text.
+- **S4 — Anonymity** ⚠️ — per-survey Named vs Anonymous. Anonymous = no identity (pseudonym_ref +
+  vault, client claim-ticket for resume), coarse timestamps, **k≥5** on results/insights.
+- **S5 — Results + CSV** — counts, CSV export incl. "Other" answers; Past surveys.
+- **S6 — In-meeting activity** — a `SURVEY` activity type: preplan → launch in session → fill live
+  → mark the response complete in the survey section.
+- **S7 — Insights tab** — per-survey analysis (ECharts) + institution-authored notes/resolutions;
+  aggregate-only (k-anonymity) for anonymous surveys.
+
+> **Quick activities without a session (parked 2026-06-17):** The Random Name Picker hangs off
+> the Sessions page a bit orphaned. Idea: a lightweight "Activities" entry point where someone can
+> do a quick thing — pick a name, challenge a specific person (e.g. RPS), draw straws — WITHOUT
+> formally creating a session. Two ways to do it: (a) standalone one-off activities (more new code:
+> activities currently assume a session/room), or (b) make "quick activity" silently spin up a
+> minimal/ephemeral session under the hood and drop you in (reuses the whole spine, far less code —
+> likely the right call). Lean toward (b) so we don't fork the activity engine. Decide scope before
+> building; don't duplicate the session machinery.
+
+### Epic W — Wellness / stress (IMPORTANT) — anonymity-critical, reuses the survey/anon spine
+Both of the things you described, and they fit together — the survey system already gives us the
+hard part (anonymous responses: pseudonym only, no identity, coarse day timestamps, k≥5 on results).
+- **Deployed pulse/wellness check** = a recurring **Anonymous survey** (existing) — scheduled, k-anonymous.
+- **Always-on self check-in** = a lightweight, always-available anonymous "how are you / stress level"
+  (a 1–5 mood/stress slider + optional note), submittable any time, *separate* from the scheduled push,
+  so people can vent when they need to. Anonymous by construction (no user_id, coarse week).
+- **Stress portal / dashboard** = aggregate stress **by department**, **only at k≥5** (never below), with
+  trend over time. Anonymous-only; AI/themes aggregate-only. Plus **guidance** — institution-shared
+  support resources / resolutions (the insights pattern), per dept or org-wide.
+- Anonymity here is the non-negotiable (CLAUDE.md): worthless if identity can leak. Reuse the anon
+  response model + k-anonymity already built for surveys; don't roll a new one.
+- Slices: W1 always-on anon check-in + k≥5 by-dept portal ✅; **individual self-care ✅** (on-device
+  history → "rough stretch" nudge to take a day off + tips; rotating positive quote — all client-side
+  so the server never links check-ins to a person); **W2 weekly stress trend ✅** (org-wide, each week
+  k≥5 or hidden); **W3 institution support content ✅** (admin-managed resources + "get help" email/
+  WhatsApp buttons that open off-app for privacy + a risk-free vent promise; published→visible to all).
+- W-next ideas: per-dept trend; AI theming over anonymous notes (aggregate-only); scheduled pulse push.
+
+### Epic R — Recognition / big-ups + awards ✅ BUILT (attributed, NOT anonymous)
+- **R1** ✅ peer big-up: badge (6 presets) + message → wall + most-celebrated board (people + dept totals).
+- **R2a** ✅ SCOPED redesign (reuses the canSeeScoped ALL/NODE/GROUP spine + peopleInScope):
+  - Recipient = a **person**, a whole **department** (org node), or a **team** (group). Clicking a
+    dept/team award lazy-loads its members (`/recognitions/:id/recipients`).
+  - `kind` = BIGUP (peer, fun) vs AWARD (official). Dept/team recipients are always AWARDs.
+  - Visibility scope: **recipient's dept by default**, **org-wide** if the issuer holds the new
+    `recognition.award` capability (no-lockout: ungoverned open, admins bypass; org-wide audited).
+  - Wall split **Recent (≤30d) / Past**; board counts visible individuals only.
+- **R2b (next)**: recipient **notifications** + unread nav badge (reuse `*_reads` + hub.sendToUsers) +
+  a per-person on/off toggle in Settings (reuse the prefs.ts localStorage pattern).
+- R-next: react/+1; points ledger when gamification lands; recognition as an in-session activity.
 
 ### Epic 2 — Meeting toolkit  (high daily value, reuses the activity + session spine)
 - **2a. Artifacts on a session** — attach links, images, YouTube/video, files everyone can

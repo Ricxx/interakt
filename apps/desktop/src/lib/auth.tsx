@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 
-export type Me = { email: string; displayName: string; role: string };
+export type Me = { id: string; email: string; displayName: string; role: string };
 
 // The current user. `null` (not undefined) once we know they're logged out.
 export function useMe() {
@@ -76,6 +76,7 @@ export type Member = {
   email: string;
   displayName: string;
   role: string;
+  jobTitle: string | null;
   status: string;
   nodeId: string | null;
   node: string | null;
@@ -101,8 +102,8 @@ export function useResendInvite() {
 export function useAssignNode() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, nodeId }: { id: string; nodeId: string | null }) =>
-      api(`/api/members/${id}`, { method: "PATCH", body: JSON.stringify({ nodeId }) }),
+    mutationFn: ({ id, ...patch }: { id: string; nodeId?: string | null; jobTitle?: string | null }) =>
+      api(`/api/members/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["members"] });
       qc.invalidateQueries({ queryKey: ["pool"] });

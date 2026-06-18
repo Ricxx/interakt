@@ -5,6 +5,7 @@ import { ActivityPanel, CATALOG as ACTIVITY_TYPES } from "./activity-panel";
 import { ParticipantsTab } from "./participants-tab";
 import { SessionLog, CompletedActivities } from "./session-log";
 import { Agenda } from "./agenda";
+import { Artifacts } from "./artifacts";
 import { Chat } from "./chat";
 import { Button } from "../../ui/button";
 import { Card } from "../../ui/card";
@@ -12,7 +13,7 @@ import { PageHeader } from "../../ui/page-header";
 import { ErrorBoundary } from "../../ui/error-boundary";
 import { cn } from "../../lib/cn";
 
-type Tab = "activities" | "agenda" | "participants" | "chat" | "log" | "settings";
+type Tab = "activities" | "agenda" | "resources" | "participants" | "chat" | "log" | "settings";
 
 function CopyCode({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
@@ -106,6 +107,7 @@ export function SessionDetailPage() {
   const TABS: { key: Tab; label: string; badge?: number }[] = [
     { key: "activities", label: "Activities" },
     { key: "agenda", label: data.agenda.length ? `Agenda (${data.agenda.length})` : "Agenda" },
+    { key: "resources", label: "Resources" },
     { key: "participants", label: `Participants (${joinedPeople.length})` },
     { key: "chat", label: "Chat", badge: data.unreadChat },
     { key: "log", label: "Session log" },
@@ -145,6 +147,7 @@ export function SessionDetailPage() {
         )
       )}
       {activeTab === "agenda" && <Agenda sessionId={id} canControl={canRunActivities} items={data.agenda} />}
+      {activeTab === "resources" && <Artifacts sessionId={id} />}
       {activeTab === "participants" && (
         <ParticipantsTab sessionId={id} hostName={session.hostName} isHost={isHost} canControl={canControl} participants={participants} inviteBatches={inviteBatches} />
       )}

@@ -30,6 +30,7 @@ export const users = pgTable("users", {
   nodeId: uuid("node_id").references(() => orgNodes.id), // home node in the org tree (nullable)
   email: text("email").notNull().unique(),
   displayName: text("display_name").notNull(),
+  jobTitle: text("job_title"), // optional, admin-set — e.g. "Senior Engineer" (display only, not a role)
   passwordHash: text("password_hash"), // null = no local password (SSO-only / directory-only)
   role: text("role").notNull().default("MEMBER"), // TENANT_ADMIN|NODE_ADMIN|FACILITATOR|MEMBER
   status: text("status").notNull().default("ACTIVE"), // ACTIVE|DISABLED
@@ -119,6 +120,14 @@ export const activities = pgTable("activities", {
     chartType?: "BAR" | "DONUT"; // poll — chart style
     pollCloseAt?: string; // poll — auto-close deadline (ISO)
     pollClosed?: boolean; // poll — voting closed
+    maxPerPerson?: number; // word cloud — max submissions per person
+    teamCount?: number; // team selector — number of teams
+    surveyId?: string; // in-meeting survey — which survey to run
+    quizId?: string; // live quiz — which quiz to run
+    quizPhase?: string; // LOBBY | QUESTION | REVEAL | PODIUM
+    quizIdx?: number; // current question index (-1 in lobby)
+    quizStartedAt?: string; // when the current question opened (ISO) — for speed scoring
+    quizDeadline?: string; // current question close time (ISO)
     closeSeconds?: number; // poll/draft — raw auto-close seconds (turned into pollCloseAt at launch)
     launchAt?: string; // draft — optional scheduled auto-launch time (ISO)
     player1Id?: string; // rps
@@ -190,6 +199,7 @@ export const boardPosts = pgTable("board_posts", {
   title: text("title").notNull(),
   body: text("body"),
   activeUntil: timestamp("active_until"), // notice expiry; null = no expiry
+  pinned: boolean("pinned").notNull().default(false), // pinned notices sort to top + ignore expiry
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -287,6 +297,42 @@ export const pollVotes = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => ({ uniqVoter: unique().on(t.activityId, t.voterId) }),
+);
+
+// Team selector — who's on which team for a TEAM_SELECT activity (random + manual moves).
+export const teamAssignments = pgTable(
+  "team_assignments",
+  {
+    activityId: uuid("activity_id").notNull().references(() => activities.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+    teamIndex: integer("team_index").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.activityId, t.userId] }) }),
+);
+
+// Draw straws — each straw has a hidden length, revealed only when someone draws it.
+// One straw per person in the room at launch; whoever draws gets that straw's length.
+export const straws = pgTable("straws", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  activityId: uuid("activity_id").notNull().references(() => activities.id),
+  idx: integer("idx").notNull(), // display position in the lineup (shuffled, uncorrelated with length)
+  length: integer("length").notNull(), // hidden until drawn; distinct 1..N (1 = shortest)
+  pickedBy: uuid("picked_by").references(() => users.id),
+  pickedAt: timestamp("picked_at"),
+});
+
+// Word cloud submissions — free text, aggregated by frequency. `word` is normalized
+// (trimmed + lowercased); the unique key stops one person inflating a single word.
+export const wordcloudEntries = pgTable(
+  "wordcloud_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    activityId: uuid("activity_id").notNull().references(() => activities.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+    word: text("word").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => ({ uniqWord: unique().on(t.activityId, t.userId, t.word) }),
 );
 
 // Team trivia: each participant submits one prompt about themselves; at close it's randomly
@@ -463,9 +509,10 @@ export const userPermissionGroups = pgTable(
 export const requests = pgTable("requests", {
   id: uuid("id").primaryKey().defaultRandom(),
   tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
-  kind: text("kind").notNull(), // PERMISSION_GRANT | GENERIC
+  kind: text("kind").notNull(), // PERMISSION_GRANT | GENERIC | SURVEY_EDIT
   subjectUserId: uuid("subject_user_id").references(() => users.id), // who it's for (PERMISSION_GRANT)
   groupId: uuid("group_id").references(() => permissionGroups.id), // requested group
+  targetId: uuid("target_id"), // generic target (e.g. the survey for SURVEY_EDIT)
   title: text("title"), // GENERIC description
   status: text("status").notNull().default("PENDING"), // PENDING | APPROVED | REJECTED
   requiredApprovals: integer("required_approvals").notNull().default(1),
@@ -502,6 +549,214 @@ export const auditLog = pgTable("audit_log", {
   meta: jsonb("meta"),
   prevHash: text("prev_hash"),
   hash: text("hash").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Wellness self check-ins — ANONYMITY-CRITICAL. No user_id, ever; only the submitter's
+// department (for k≥5 by-dept aggregates) and a coarse day. Always-on: anyone can check in
+// any time, separate from any scheduled pulse survey.
+export const wellnessCheckins = pgTable("wellness_checkins", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  nodeId: uuid("node_id"), // the submitter's department/node (NOT identity) — null if unplaced
+  stress: integer("stress").notNull(), // 1 = great … 5 = struggling
+  note: text("note"), // optional, anonymous; never surfaced individually
+  createdDay: date("created_day").notNull(), // coarse, no precise time (defeats timing correlation)
+});
+
+// Institution-controlled support content shown on the Wellness page: resources, links, and
+// "get help" contacts (email / WhatsApp). NOT anonymity-critical — it's admin-authored content,
+// so storing the author is fine. The help contacts are mailto:/wa.me links the person follows
+// off-app from their OWN device, so reaching out leaves no identity trail here.
+export const wellnessResources = pgTable("wellness_resources", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  title: text("title").notNull(),
+  body: text("body"), // supportive blurb / the "risk-free vent" promise
+  url: text("url"), // optional info link
+  email: text("email"), // optional → renders a "Get help" mailto button
+  whatsapp: text("whatsapp"), // optional phone (digits) → renders a WhatsApp button
+  published: boolean("published").notNull().default(false),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdBy: uuid("created_by").references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Recognition ("big-ups" + official awards): someone celebrates a person, a whole department, or a
+// team (group) with a badge + message. ATTRIBUTED by design (the point is to know who praised you).
+// `kind` = BIGUP (peer, fun) | AWARD (official, issued by privileged staff). `scopeKind`/`scopeId`
+// control who can SEE it (reuses the canSeeScoped spine): ALL = org-wide, NODE = a dept/division,
+// GROUP = a team. Recipient is exactly one of toUserId / recipientNodeId / recipientGroupId.
+export const recognitions = pgTable("recognitions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  fromUserId: uuid("from_user_id").notNull().references(() => users.id),
+  kind: text("kind").notNull().default("BIGUP"), // BIGUP | AWARD
+  recipientType: text("recipient_type").notNull().default("USER"), // USER | NODE | GROUP
+  toUserId: uuid("to_user_id").references(() => users.id), // set when recipientType = USER
+  recipientNodeId: uuid("recipient_node_id").references(() => orgNodes.id), // set when NODE
+  recipientGroupId: uuid("recipient_group_id").references(() => groups.id), // set when GROUP
+  scopeKind: text("scope_kind").notNull().default("NODE"), // ALL | NODE | GROUP — who can see it
+  scopeId: uuid("scope_id"), // the node/group for NODE/GROUP visibility
+  badge: text("badge").notNull(), // one of a small preset set (see recognition/routes.ts)
+  message: text("message").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A light "+1 / star" of support on a recognition. No notification — just visible support.
+export const recognitionLikes = pgTable(
+  "recognition_likes",
+  {
+    recognitionId: uuid("recognition_id").notNull().references(() => recognitions.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.recognitionId, t.userId] }) }),
+);
+
+// Quizzes — Kahoot-style. Reusable templates (a pool): build once, launch as a QUIZ activity
+// any number of times. Questions carry the correct answer, optional media, timer, and points.
+export const quizzes = pgTable("quizzes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  title: text("title").notNull(),
+  description: text("description"),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const quizQuestions = pgTable("quiz_questions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  quizId: uuid("quiz_id").notNull().references(() => quizzes.id),
+  position: integer("position").notNull(),
+  type: text("type").notNull(), // MC | TF | TYPE_ANSWER | PUZZLE | SLIDER
+  prompt: text("prompt").notNull(),
+  options: jsonb("options").$type<string[]>(), // MC/PUZZLE items; TYPE_ANSWER = accepted answers; TF none
+  // correct answer, shape depends on type: MC {indices}, TF {bool}, TYPE_ANSWER {texts},
+  // PUZZLE {order}, SLIDER {value, tolerance, min, max}
+  correct: jsonb("correct").$type<{ indices?: number[]; bool?: boolean; texts?: string[]; order?: number[]; value?: number; tolerance?: number; min?: number; max?: number }>(),
+  timeLimitSec: integer("time_limit_sec").notNull().default(20),
+  points: text("points").notNull().default("STANDARD"), // STANDARD | DOUBLE | NONE
+  mediaKind: text("media_kind"), // IMAGE | VIDEO | AUDIO
+  mediaUrl: text("media_url"),
+});
+
+// Live quiz answers — one per player per question, graded on submit (correctness + speed +
+// streak). The leaderboard is sum(points) per player; streak is carried for the bonus.
+export const quizAnswers = pgTable(
+  "quiz_answers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    activityId: uuid("activity_id").notNull().references(() => activities.id),
+    questionId: uuid("question_id").notNull().references(() => quizQuestions.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+    answer: jsonb("answer").$type<{ indices?: number[]; bool?: boolean; text?: string; order?: number[]; value?: number }>(),
+    correct: boolean("correct").notNull(),
+    points: integer("points").notNull().default(0),
+    streak: integer("streak").notNull().default(0),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => ({ uniq: unique().on(t.activityId, t.questionId, t.userId) }),
+);
+
+// Surveys — a form builder + lifecycle. A survey is authored as DRAFT (fully editable),
+// then distributed + opened. anonymity is chosen per survey (NAMED stores the respondent;
+// ANON stores only a pseudonym_ref + applies k-anonymity — wired in a later slice).
+export const surveys = pgTable("surveys", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  title: text("title").notNull(),
+  description: text("description"),
+  anonymity: text("anonymity").notNull().default("NAMED"), // NAMED | ANON
+  perPage: integer("per_page").notNull().default(5),
+  status: text("status").notNull().default("DRAFT"), // DRAFT | OPEN | PAUSED | CLOSED
+  scopeKind: text("scope_kind"), // distribution: ALL | NODE | GROUP
+  scopeId: uuid("scope_id"),
+  exclusions: jsonb("exclusions").$type<{ kind: string; id: string }[]>(), // "org-except" — nodes/groups removed from the audience
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Optional grouping for questions. showToTakers=false means it's just a builder-side
+// organizer (respondents see a flat list); true means takers see the section heading.
+export const surveySections = pgTable("survey_sections", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  surveyId: uuid("survey_id").notNull().references(() => surveys.id),
+  position: integer("position").notNull(),
+  title: text("title").notNull(),
+  showToTakers: boolean("show_to_takers").notNull().default(true),
+});
+
+export const surveyQuestions = pgTable("survey_questions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  surveyId: uuid("survey_id").notNull().references(() => surveys.id),
+  sectionId: uuid("section_id"), // null = ungrouped; FK added in SQL (avoid ordering issues)
+  position: integer("position").notNull(),
+  type: text("type").notNull(), // SINGLE | MULTI | TEXT | SCALE
+  prompt: text("prompt").notNull(),
+  options: jsonb("options").$type<string[]>(), // SINGLE/MULTI choices
+  required: boolean("required").notNull().default(false),
+  allowOther: boolean("allow_other").notNull().default(false), // SINGLE/MULTI: capture a free-text "Other"
+});
+
+// A respondent's progress + submission. NAMED surveys record respondentId; ANON surveys
+// record only an opaque pseudonymRef (the client's resume "claim ticket") and NO identity.
+// Coarse day-only timestamps (never precise) so anonymous responses can't be time-correlated.
+export const surveyResponses = pgTable(
+  "survey_responses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    surveyId: uuid("survey_id").notNull().references(() => surveys.id),
+    respondentId: uuid("respondent_id").references(() => users.id), // null for anonymous
+    pseudonymRef: text("pseudonym_ref"), // set for anonymous; the client keeps it to resume
+    status: text("status").notNull().default("IN_PROGRESS"), // IN_PROGRESS | SUBMITTED
+    page: integer("page").notNull().default(0), // resume position
+    createdDay: date("created_day").notNull(),
+    submittedDay: date("submitted_day"),
+  },
+  (t) => ({ uniqNamed: unique().on(t.surveyId, t.respondentId) }), // one per user (nulls don't collide → anon unrestricted)
+);
+
+export const surveyAnswers = pgTable(
+  "survey_answers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    responseId: uuid("response_id").notNull().references(() => surveyResponses.id),
+    questionId: uuid("question_id").notNull().references(() => surveyQuestions.id),
+    value: jsonb("value").$type<{ choice?: number; choices?: number[]; text?: string; scale?: number; other?: string }>(),
+  },
+  (t) => ({ uniqAns: unique().on(t.responseId, t.questionId) }),
+);
+
+// Institution-authored insight on a survey: an analysis + whatever the org wants to share
+// (solutions, resolutions, next steps). Drafted by the survey owner, then published to the org.
+export const surveyInsights = pgTable("survey_insights", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  surveyId: uuid("survey_id").notNull().references(() => surveys.id),
+  title: text("title").notNull(),
+  body: text("body").notNull().default(""),
+  published: boolean("published").notNull().default(false),
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Who else can edit a survey (besides its creator + tenant admins).
+export const surveyCollaborators = pgTable(
+  "survey_collaborators",
+  {
+    surveyId: uuid("survey_id").notNull().references(() => surveys.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.surveyId, t.userId] }) }),
+);
+
+// Builder revision history — "X added Q1", "Y edited Q2", with who + when.
+export const surveyEdits = pgTable("survey_edits", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  surveyId: uuid("survey_id").notNull().references(() => surveys.id),
+  actorId: uuid("actor_id").notNull().references(() => users.id),
+  action: text("action").notNull(),
+  detail: text("detail"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -559,3 +814,23 @@ export const listReads = pgTable(
   },
   (t) => ({ pk: primaryKey({ columns: [t.listId, t.userId] }) }),
 );
+
+// When each user last opened the To-do board → drives the "N task updates" nav badge.
+export const taskReads = pgTable("task_reads", {
+  userId: uuid("user_id").primaryKey().references(() => users.id),
+  lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+});
+
+// Meeting resources attached to a session: a link, image, or video everyone can open
+// instantly (no screen-share). URL-based for now; file uploads (MinIO) are a later slice.
+export const sessionArtifacts = pgTable("session_artifacts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  sessionId: uuid("session_id").notNull().references(() => sessions.id),
+  kind: text("kind").notNull(), // LINK | IMAGE | VIDEO | DATA
+  title: text("title").notNull(),
+  url: text("url"), // set for LINK/IMAGE/VIDEO
+  data: text("data"), // set for DATA — pasted CSV/TSV, parsed + charted client-side
+  chartType: text("chart_type"), // DATA only: BAR | LINE | DONUT
+  addedBy: uuid("added_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});

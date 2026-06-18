@@ -11,8 +11,11 @@ function statusChip(s: string) {
   return <span className={`rounded px-1.5 py-0.5 text-xs ${STATUS_STYLE[s] ?? "bg-border/60 text-muted"}`}>{s.toLowerCase()}</span>;
 }
 
+const UUID_RE = /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/;
+
 function desc(r: RequestItem): string {
   if (r.kind === "PERMISSION_GRANT") return `Join "${r.groupName ?? "?"}"${r.subjectName ? ` — ${r.subjectName}` : ""}`;
+  if (r.kind === "SURVEY_EDIT") return `Edit access: ${r.surveyTitle ?? "a survey"}`;
   return r.title ?? "Request";
 }
 
@@ -24,6 +27,7 @@ export function RequestsPage() {
   const reject = useReviewRequest("reject");
   const [group, setGroup] = useState("");
   const [title, setTitle] = useState("");
+  const [surveyLink, setSurveyLink] = useState("");
 
   const groups = groupData?.groups ?? [];
   const mine = data?.mine ?? [];
@@ -44,6 +48,10 @@ export function RequestsPage() {
         <div className="flex gap-2">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Other request (e.g. pin a notice to the org board)" className="flex-1" />
           <Button variant="ghost" onClick={() => title.trim() && create.mutate({ kind: "GENERIC", title: title.trim() }, { onSuccess: () => setTitle("") })} disabled={!title.trim() || create.isPending}>Submit</Button>
+        </div>
+        <div className="flex gap-2">
+          <Input value={surveyLink} onChange={(e) => setSurveyLink(e.target.value)} placeholder="Request edit access — enter the survey's ID" className="flex-1" />
+          <Button variant="ghost" onClick={() => { const id = surveyLink.match(UUID_RE)?.[1]; if (id) create.mutate({ kind: "SURVEY_EDIT", surveyId: id }, { onSuccess: () => setSurveyLink("") }); }} disabled={!UUID_RE.test(surveyLink) || create.isPending}>Ask owner</Button>
         </div>
       </Card>
 

@@ -25,7 +25,7 @@ const acceptBody = z.object({
   password: z.string().min(8).max(200),
 });
 
-const assignBody = z.object({ nodeId: z.string().uuid().nullable() });
+const assignBody = z.object({ nodeId: z.string().uuid().nullable().optional(), jobTitle: z.string().trim().max(120).nullable().optional() });
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -39,6 +39,7 @@ export function memberRoutes(app: FastifyInstance) {
         email: users.email,
         displayName: users.displayName,
         role: users.role,
+        jobTitle: users.jobTitle,
         status: users.status,
         nodeId: users.nodeId,
         node: orgNodes.name,
@@ -81,7 +82,7 @@ export function memberRoutes(app: FastifyInstance) {
     const parsed = assignBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_input" });
     const tenantId = req.currentUser!.tenantId;
-    const { nodeId } = parsed.data;
+    const { nodeId, jobTitle } = parsed.data;
 
     if (nodeId) {
       const [node] = await db
@@ -90,11 +91,12 @@ export function memberRoutes(app: FastifyInstance) {
         .where(and(eq(orgNodes.id, nodeId), eq(orgNodes.tenantId, tenantId)));
       if (!node) return reply.code(400).send({ error: "invalid_node" });
     }
-    await db
-      .update(users)
-      .set({ nodeId })
-      .where(and(eq(users.id, req.params.id), eq(users.tenantId, tenantId)));
-    await recordAudit({ action: "member.node_changed", tenantId, actorId: req.currentUser!.id, meta: { memberId: req.params.id, nodeId } });
+    const patch: Record<string, unknown> = {};
+    if (nodeId !== undefined) patch.nodeId = nodeId;
+    if (jobTitle !== undefined) patch.jobTitle = jobTitle || null;
+    if (!Object.keys(patch).length) return { ok: true };
+    await db.update(users).set(patch).where(and(eq(users.id, req.params.id), eq(users.tenantId, tenantId)));
+    await recordAudit({ action: "member.updated", tenantId, actorId: req.currentUser!.id, meta: { memberId: req.params.id, ...("nodeId" in patch ? { nodeId } : {}), ...("jobTitle" in patch ? { jobTitle: jobTitle || null } : {}) } });
     return { ok: true };
   });
 

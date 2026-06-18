@@ -13,6 +13,7 @@ export type RequestItem = {
   subjectUserId: string | null;
   createdAt: string;
   groupName: string | null;
+  surveyTitle: string | null;
   subjectName: string | null;
   creatorName: string | null;
 };
@@ -26,7 +27,7 @@ export function useGroupList() {
 export function useCreateRequest() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { kind: "PERMISSION_GRANT"; groupId: string } | { kind: "GENERIC"; title: string }) => api("/api/requests", { method: "POST", body: JSON.stringify(v) }),
+    mutationFn: (v: { kind: "PERMISSION_GRANT"; groupId: string } | { kind: "GENERIC"; title: string } | { kind: "SURVEY_EDIT"; surveyId: string }) => api("/api/requests", { method: "POST", body: JSON.stringify(v) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["requests"] }),
   });
 }

@@ -12,6 +12,20 @@ const ROLES = ["MEMBER", "FACILITATOR", "NODE_ADMIN", "TENANT_ADMIN"];
 
 type OrgNode = { id: string; name: string; path: string };
 
+function JobTitleCell({ id, jobTitle }: { id: string; jobTitle: string | null }) {
+  const update = useAssignNode();
+  const [v, setV] = useState(jobTitle ?? "");
+  return (
+    <input
+      value={v}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => { if ((jobTitle ?? "") !== v.trim()) update.mutate({ id, jobTitle: v.trim() || null }); }}
+      placeholder="—"
+      className="w-32 rounded border border-border bg-surface px-1.5 py-0.5 text-xs"
+    />
+  );
+}
+
 function DepartmentSelect({ id, nodeId, nodes }: { id: string; nodeId: string | null; nodes: OrgNode[] }) {
   const assign = useAssignNode();
   return (
@@ -169,6 +183,7 @@ export function MembersPage() {
               <th className="pb-2 font-medium">Name</th>
               <th className="pb-2 font-medium">Email</th>
               <th className="pb-2 font-medium">Role</th>
+              <th className="pb-2 font-medium">Job title</th>
               <th className="pb-2 font-medium">Department</th>
               <th className="pb-2 font-medium">Permission groups</th>
               <th className="pb-2 font-medium">Status</th>
@@ -180,6 +195,7 @@ export function MembersPage() {
                 <td className="py-2">{m.displayName}</td>
                 <td className="py-2">{m.email}</td>
                 <td className="py-2">{m.role}</td>
+                <td className="py-2"><JobTitleCell id={m.id} jobTitle={m.jobTitle} /></td>
                 <td className="py-2">
                   <DepartmentSelect id={m.id} nodeId={m.nodeId} nodes={nodes} />
                 </td>
@@ -192,6 +208,7 @@ export function MembersPage() {
                 <td className="py-2 italic">Invited</td>
                 <td className="py-2">{p.email}</td>
                 <td className="py-2">{p.role}</td>
+                <td className="py-2">—</td>
                 <td className="py-2">—</td>
                 <td className="py-2">—</td>
                 <td className="py-2">

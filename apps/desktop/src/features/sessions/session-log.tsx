@@ -50,6 +50,29 @@ function Entry({ a }: { a: PastActivity }) {
                 })}
               </ul>
             </div>
+          ) : a.wordcloud ? (
+            <div className="text-sm">
+              <div className="text-xs text-muted">{a.wordcloud.total} word{a.wordcloud.total === 1 ? "" : "s"}</div>
+              <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-xs">
+                {a.wordcloud.words.length === 0 ? <span className="text-muted">No words.</span> : a.wordcloud.words.map((w) => <span key={w.text}>{w.text}<span className="text-muted">·{w.count}</span></span>)}
+              </div>
+            </div>
+          ) : a.teams ? (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {a.teams.teams.map((tm) => (
+                <div key={tm.index}>
+                  <div className="font-medium">{tm.name}</div>
+                  <div className="text-muted">{tm.members.map((m) => m.name).join(", ") || "—"}</div>
+                </div>
+              ))}
+            </div>
+          ) : a.straws ? (
+            <div className="text-sm">
+              <div className="text-xs text-muted">{a.straws.total} straws · shortest first</div>
+              <ol className="mt-1 space-y-0.5 text-xs">
+                {a.straws.ranking.map((r, i) => <li key={i}>{i + 1}. {r.name} <span className="text-muted">· {r.length}</span></li>)}
+              </ol>
+            </div>
           ) : a.trivia ? (
             <div className="space-y-1 text-sm">
               {a.trivia.map((r, i) => (

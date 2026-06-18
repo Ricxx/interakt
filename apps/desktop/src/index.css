@@ -13,6 +13,17 @@
   --primary-fg: 0 0% 100%;
 }
 
+/* Dark theme: same tokens, dark values. Every component follows automatically. */
+:root.dark {
+  --bg: 222 30% 9%;
+  --surface: 222 24% 14%;
+  --border: 222 16% 26%;
+  --muted: 215 18% 62%;
+  --fg: 210 20% 96%;
+  --primary: 222 70% 64%;
+  --primary-fg: 222 47% 11%;
+}
+
 body {
   @apply bg-bg text-fg;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;

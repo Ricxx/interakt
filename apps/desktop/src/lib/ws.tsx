@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { playNotify } from "./prefs";
 
 // One WebSocket while logged in. On every event we refresh the affected queries —
 // which also resyncs state after a reconnect (the simple, robust integration).
@@ -17,6 +18,8 @@ export function useRealtime(enabled: boolean) {
       socket = new WebSocket(`${proto}://${location.host}/api/ws`);
       socket.onmessage = (e) => {
         const event = JSON.parse(e.data);
+        // Pull back someone whose window isn't focused when they're invited into a session.
+        if (event.type === "session.invite" && !document.hasFocus()) playNotify();
         qc.invalidateQueries({ queryKey: ["me-invites"] });
         if (event.boardId) {
           qc.invalidateQueries({ queryKey: ["board", event.boardId] });
@@ -25,6 +28,7 @@ export function useRealtime(enabled: boolean) {
         if (event.sessionId) {
           qc.invalidateQueries({ queryKey: ["session", event.sessionId] });
           qc.invalidateQueries({ queryKey: ["messages", event.sessionId] });
+          qc.invalidateQueries({ queryKey: ["artifacts", event.sessionId] });
           qc.invalidateQueries({ queryKey: ["idea-comments"] }); // refresh any open comment thread
         }
         window.dispatchEvent(new CustomEvent("ces-rt", { detail: event }));

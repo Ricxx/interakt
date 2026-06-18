@@ -37,6 +37,48 @@ export type CurrentActivity = {
   taskReview?: TaskReview;
   trivia?: Trivia;
   poll?: Poll;
+  wordcloud?: WordCloud;
+  straws?: Straws;
+  teams?: Teams;
+  survey?: SurveyActivity;
+  quiz?: QuizActivity | null;
+};
+
+export type QuizActivity = {
+  title: string;
+  phase: string; // LOBBY | QUESTION | REVEAL | PODIUM
+  idx: number;
+  total: number;
+  question?: { id: string; type: string; prompt: string; options: string[]; optionIdx?: number[]; slider?: { min: number; max: number }; mediaKind: string | null; mediaUrl: string | null; points: string; timeLimitSec: number; deadline: string | null };
+  myAnswered?: boolean;
+  answerCount?: number;
+  answerText?: string;
+  distribution?: { total: number; correctCount: number; perOption?: number[] };
+  leaderboard?: { rank: number; name: string; score: number; correct: number }[];
+  myResult?: { correct: boolean; points: number };
+  isLast?: boolean;
+};
+
+export type SurveyActivity = {
+  id: string;
+  title: string;
+  anonymity: string;
+  submittedCount: number;
+  myStatus: string | null;
+  questions: { id: string; type: string; prompt: string; options: string[]; required: boolean; allowOther: boolean }[];
+};
+
+export type Team = { index: number; name: string; members: { id: string; name: string }[] };
+export type Teams = { teamCount: number; teams: Team[]; myTeam: number | null };
+
+export type WordCloud = { prompt: string; words: { text: string; count: number }[]; total: number; mineCount: number; maxPerPerson: number };
+export type Straws = {
+  straws: { idx: number; picked: boolean; pickerName: string | null; length: number | null }[];
+  total: number;
+  drawnCount: number;
+  iDrew: boolean;
+  done: boolean;
+  ranking: { name: string; length: number }[];
 };
 
 export type PollOption = { index: number; label: string; count: number };
@@ -132,6 +174,9 @@ export type PastActivity = {
   tasks?: Task[];
   trivia?: { authorName: string; prompt: string; options: string[] | null; correctIndex: number | null; answer: string | null }[];
   poll?: { question: string; chartType: string; total: number; options: { label: string; count: number }[] };
+  wordcloud?: { prompt: string; words: { text: string; count: number }[]; total: number };
+  straws?: { total: number; ranking: { name: string; length: number }[] };
+  teams?: { teams: { index: number; name: string; members: { id: string; name: string }[] }[] };
 };
 export type InviteBatch = { id: string; scopeLabel: string; count: number; byName: string | null; createdAt: string; cancelledAt: string | null; cancelReason: string | null };
 export type SessionDetail = {
@@ -325,6 +370,58 @@ export function usePollVote(sessionId: string, activityId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (optionIndex: number) => api(`/api/activities/${activityId}/poll/vote`, { method: "POST", body: JSON.stringify({ optionIndex }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useReshuffleTeams(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api(`/api/activities/${activityId}/teams/reshuffle`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useMoveTeam(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { userId: string; teamIndex: number }) => api(`/api/activities/${activityId}/teams/move`, { method: "POST", body: JSON.stringify(v) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function usePickStraw(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (idx: number) => api(`/api/activities/${activityId}/straws/${idx}/pick`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useQuizAdvance(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api(`/api/activities/${activityId}/quiz/advance`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useQuizAnswer(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (answer: unknown) => api(`/api/activities/${activityId}/quiz/answer`, { method: "POST", body: JSON.stringify({ answer }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useSaveSurveyAnswer(activityId: string) {
+  return useMutation({ mutationFn: (v: { ticket?: string; answers: { questionId: string; value: unknown }[] }) => api<{ ok: boolean; ticket?: string }>(`/api/activities/${activityId}/survey/save`, { method: "POST", body: JSON.stringify(v) }) });
+}
+export function useSubmitSurvey(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ticket?: string) => api<{ ok: boolean }>(`/api/activities/${activityId}/survey/submit`, { method: "POST", body: JSON.stringify({ ticket }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useSubmitWord(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (word: string) => api(`/api/activities/${activityId}/words`, { method: "POST", body: JSON.stringify({ word }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
   });
 }

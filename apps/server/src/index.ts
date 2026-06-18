@@ -23,6 +23,16 @@ import { auditRoutes } from "./features/audit/routes.js";
 import { permissionRoutes } from "./features/permissions/routes.js";
 import { requestRoutes } from "./features/requests/routes.js";
 import { listRoutes } from "./features/lists/routes.js";
+import { refRoutes } from "./features/refs/routes.js";
+import { artifactRoutes } from "./features/artifacts/routes.js";
+import { surveyRoutes } from "./features/surveys/routes.js";
+import { surveyRespondRoutes } from "./features/surveys/respond.js";
+import { surveyResultsRoutes } from "./features/surveys/results.js";
+import { surveyInsightRoutes } from "./features/surveys/insights.js";
+import { quizRoutes } from "./features/quizzes/routes.js";
+import { wellnessRoutes } from "./features/wellness/routes.js";
+import { recognitionRoutes } from "./features/recognition/routes.js";
+import { profileRoutes } from "./features/profile/routes.js";
 
 const app = Fastify({ logger: true });
 
@@ -70,6 +80,16 @@ auditRoutes(app);
 permissionRoutes(app);
 requestRoutes(app);
 listRoutes(app);
+refRoutes(app);
+artifactRoutes(app);
+surveyRoutes(app);
+surveyRespondRoutes(app);
+surveyResultsRoutes(app);
+surveyInsightRoutes(app);
+quizRoutes(app);
+wellnessRoutes(app);
+recognitionRoutes(app);
+profileRoutes(app);
 
 app
   .listen({ port: env.port, host: "0.0.0.0" })

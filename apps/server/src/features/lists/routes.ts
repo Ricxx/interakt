@@ -7,6 +7,17 @@ import { max } from "drizzle-orm";
 import { requireAuth, type CurrentUser } from "../../auth.js";
 import { canSeeScoped, scopeLabel } from "../../lib/scopeAccess.js";
 import { userNodeId } from "../../lib/orgScope.js";
+import { can, hasScope, isGoverned } from "../../lib/capabilities.js";
+
+// Governed users need list.create to make a list, and list.distribute reach for its scope
+// (org-wide → ORG, a node → reach to it, a group → just the cap). Ungoverned users: open default.
+async function canMakeList(user: CurrentUser, scope: { scopeKind: string; scopeId: string | null }): Promise<boolean> {
+  if (!(await isGoverned(user.id))) return true;
+  if (!(await can(user, "list.create"))) return false;
+  if (scope.scopeKind === "ALL") return hasScope(user, "list.distribute", "ORG");
+  if (scope.scopeKind === "GROUP") return can(user, "list.distribute");
+  return can(user, "list.distribute", scope.scopeId ?? undefined);
+}
 
 const createBody = z.object({
   title: z.string().min(1).max(160),
@@ -131,6 +142,7 @@ export function listRoutes(app: FastifyInstance) {
     const me = req.currentUser!;
     const scope = await resolveScope(parsed.data, me);
     if ("error" in scope) return reply.code(400).send({ error: scope.error });
+    if (!(await canMakeList(me, scope))) return reply.code(403).send({ error: "not_allowed" });
     const [l] = await db
       .insert(lists)
       .values({ tenantId: me.tenantId, title: parsed.data.title, recurrence: parsed.data.recurrence, scopeKind: scope.scopeKind, scopeId: scope.scopeId, createdBy: me.id })

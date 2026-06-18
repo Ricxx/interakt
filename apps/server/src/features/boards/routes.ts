@@ -6,8 +6,17 @@ import { boards, boardPosts, boardPostComments, brainstormIdeas, brainstormLikes
 import { requireAuth } from "../../auth.js";
 import { listIdeas } from "../../lib/ideas.js";
 import { canSeeScoped, scopeLabel } from "../../lib/scopeAccess.js";
+import { can, isGoverned } from "../../lib/capabilities.js";
 import { peopleInScope } from "../../lib/scope.js";
 import { hub } from "../../lib/realtime.js";
+
+// Who can pin a notice: the board's creator/admin always; otherwise governed users with the
+// pin capability for the board's scope. Ungoverned non-creators can't pin (keeps it curated).
+async function canPin(user: { id: string; tenantId: string; role: string }, board: { createdBy: string; scopeKind: string; scopeId: string | null }): Promise<boolean> {
+  if (user.role === "TENANT_ADMIN" || board.createdBy === user.id) return true;
+  if (!(await isGoverned(user.id))) return false;
+  return can(user, "pin", board.scopeKind === "NODE" ? board.scopeId ?? undefined : undefined);
+}
 
 const createBody = z.object({
   type: z.enum(["NOTICE", "BRAINSTORM"]),
@@ -64,7 +73,7 @@ export function boardRoutes(app: FastifyInstance) {
     const me = req.currentUser!;
     const b = await accessibleBoard(req.params.id, me.id, me.tenantId);
     if (!b) return reply.code(404).send({ error: "not_found" });
-    const base = { board: { id: b.id, type: b.type, title: b.title, description: b.description, scope: await scopeLabel(me.tenantId, b.scopeKind, b.scopeId) } };
+    const base = { board: { id: b.id, type: b.type, title: b.title, description: b.description, scope: await scopeLabel(me.tenantId, b.scopeKind, b.scopeId), canPin: await canPin(me, b) } };
     if (b.type === "NOTICE") return { ...base, posts: await noticePosts(b.id) };
     return { ...base, ideas: await listIdeas({ boardId: b.id }, me.id) };
   });
@@ -76,6 +85,19 @@ export function boardRoutes(app: FastifyInstance) {
     const b = await accessibleBoard(req.params.id, req.currentUser!.id, req.currentUser!.tenantId);
     if (!b || b.type !== "NOTICE") return reply.code(404).send({ error: "not_found" });
     await db.insert(boardPosts).values({ boardId: b.id, authorId: req.currentUser!.id, title: body.data.title, body: body.data.body ?? null, activeUntil: body.data.activeUntil ? new Date(body.data.activeUntil) : null });
+    await notifyBoard(b);
+    return { ok: true };
+  });
+
+  // Pin / unpin a notice (board owner / admin, or someone with the pin capability for its scope).
+  app.post<{ Params: { id: string; postId: string } }>("/api/boards/:id/posts/:postId/pin", { preHandler: requireAuth }, async (req, reply) => {
+    const me = req.currentUser!;
+    const b = await accessibleBoard(req.params.id, me.id, me.tenantId);
+    if (!b || b.type !== "NOTICE") return reply.code(404).send({ error: "not_found" });
+    if (!(await canPin(me, b))) return reply.code(403).send({ error: "not_allowed" });
+    const [p] = await db.select({ id: boardPosts.id, pinned: boardPosts.pinned }).from(boardPosts).where(and(eq(boardPosts.id, req.params.postId), eq(boardPosts.boardId, b.id)));
+    if (!p) return reply.code(404).send({ error: "not_found" });
+    await db.update(boardPosts).set({ pinned: !p.pinned }).where(eq(boardPosts.id, p.id));
     await notifyBoard(b);
     return { ok: true };
   });
@@ -151,11 +173,11 @@ export function boardRoutes(app: FastifyInstance) {
 // Notice posts with comment counts + archived flag (active-until passed). Newest first.
 async function noticePosts(boardId: string) {
   const rows = await db
-    .select({ id: boardPosts.id, title: boardPosts.title, body: boardPosts.body, authorName: users.displayName, activeUntil: boardPosts.activeUntil, createdAt: boardPosts.createdAt })
+    .select({ id: boardPosts.id, title: boardPosts.title, body: boardPosts.body, authorName: users.displayName, activeUntil: boardPosts.activeUntil, pinned: boardPosts.pinned, createdAt: boardPosts.createdAt })
     .from(boardPosts)
     .innerJoin(users, eq(users.id, boardPosts.authorId))
     .where(eq(boardPosts.boardId, boardId))
-    .orderBy(desc(boardPosts.createdAt))
+    .orderBy(desc(boardPosts.pinned), desc(boardPosts.createdAt)) // pinned first
     .limit(100);
   const ids = rows.map((r) => r.id);
   const comments = ids.length ? await db.select({ postId: boardPostComments.postId }).from(boardPostComments).where(inArray(boardPostComments.postId, ids)) : [];
@@ -168,7 +190,8 @@ async function noticePosts(boardId: string) {
     body: r.body,
     authorName: r.authorName,
     activeUntil: r.activeUntil?.toISOString() ?? null,
-    archived: !!r.activeUntil && r.activeUntil.getTime() < now,
+    pinned: r.pinned,
+    archived: !r.pinned && !!r.activeUntil && r.activeUntil.getTime() < now, // pinned notices never archive
     comments: cc.get(r.id) ?? 0,
     createdAt: r.createdAt.toISOString(),
   }));

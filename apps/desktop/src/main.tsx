@@ -26,7 +26,18 @@ import { PermissionsPage } from "./features/permissions/page";
 import { SettingsPage } from "./features/settings/page";
 import { ListsPage } from "./features/lists/page";
 import { ListDetailPage } from "./features/lists/detail";
+import { SurveysPage } from "./features/surveys/page";
+import { SurveyBuilderPage } from "./features/surveys/builder";
+import { SurveyRespondPage } from "./features/surveys/respond";
+import { SurveyResultsPage } from "./features/surveys/results";
+import { QuizzesPage } from "./features/quizzes/page";
+import { QuizBuilderPage } from "./features/quizzes/builder";
+import { WellnessPage } from "./features/wellness/page";
+import { RecognitionPage } from "./features/recognition/page";
+import { initTheme } from "./lib/prefs";
 import "./index.css";
+
+initTheme(); // apply saved light/dark theme before first paint
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
@@ -57,6 +68,14 @@ function App() {
           <Route path="repository" element={<RepoPage />} />
           <Route path="lists" element={<ListsPage />} />
           <Route path="lists/:id" element={<ListDetailPage />} />
+          <Route path="surveys" element={<SurveysPage />} />
+          <Route path="surveys/:id" element={<SurveyBuilderPage />} />
+          <Route path="surveys/:id/respond" element={<SurveyRespondPage />} />
+          <Route path="surveys/:id/results" element={<SurveyResultsPage />} />
+          <Route path="quizzes" element={<QuizzesPage />} />
+          <Route path="quizzes/:id" element={<QuizBuilderPage />} />
+          <Route path="wellness" element={<WellnessPage />} />
+          <Route path="recognition" element={<RecognitionPage />} />
           <Route path="requests" element={<RequestsPage />} />
           <Route path="boards" element={<BoardsPage />} />
           <Route path="boards/:id" element={<BoardDetailPage />} />

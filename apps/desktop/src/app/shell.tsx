@@ -3,12 +3,14 @@ import { useMe, useLogout } from "../lib/auth";
 import { useMeInvites } from "../lib/sessions";
 import { useRequests } from "../lib/requests";
 import { useLists } from "../lib/lists";
+import { useTasksUnread } from "../lib/tasks";
+import { useSound, useTheme } from "../lib/prefs";
 import { cn } from "../lib/cn";
 
 // The single app frame: sidebar + content area. Every feature page renders inside
 // <Outlet/>. Links are grouped into labelled sections so the nav reads as a few
 // tidy headings rather than one long flat list.
-type Item = { to: string; label: string; end?: boolean; badge?: "sessions" | "requests" | "lists" };
+type Item = { to: string; label: string; end?: boolean; badge?: "sessions" | "requests" | "lists" | "tasks" };
 type Section = { heading?: string; adminOnly?: boolean; items: Item[] };
 
 const SECTIONS: Section[] = [
@@ -20,7 +22,11 @@ const SECTIONS: Section[] = [
       { to: "/boards", label: "Boards" },
       { to: "/repository", label: "Repository" },
       { to: "/lists", label: "Lists", badge: "lists" },
-      { to: "/tasks", label: "To-do" },
+      { to: "/tasks", label: "To-do", badge: "tasks" },
+      { to: "/surveys", label: "Surveys" },
+      { to: "/quizzes", label: "Quizzes" },
+      { to: "/wellness", label: "Wellness" },
+      { to: "/recognition", label: "Recognition" },
       { to: "/requests", label: "Requests", badge: "requests" },
     ],
   },
@@ -53,10 +59,14 @@ export function Shell() {
   const { data: invites } = useMeInvites();
   const { data: requests } = useRequests();
   const { data: lists } = useLists();
+  const { data: tasksUnread } = useTasksUnread();
+  const theme = useTheme();
+  const sound = useSound();
   const counts = {
     sessions: (invites?.invites ?? []).filter((i) => i.myState === "INVITED").length,
     requests: (requests?.queue ?? []).filter((r) => r.status === "PENDING" && !r.iApproved).length,
     lists: (lists?.lists ?? []).filter((l) => l.unread).length,
+    tasks: tasksUnread?.count ?? 0,
   };
 
   const sections = SECTIONS.filter((s) => !s.adminOnly || isAdmin);
@@ -103,6 +113,22 @@ export function Shell() {
               <div className="truncate text-sm font-medium text-fg">{me?.displayName}</div>
               <div className="truncate text-xs text-muted">{ROLE_LABEL[me?.role ?? ""] ?? me?.role}</div>
             </div>
+            <button
+              title={sound.on ? "Sounds on" : "Sounds off"}
+              aria-label="Toggle sounds"
+              onClick={sound.toggle}
+              className="shrink-0 rounded-md p-2 text-muted hover:bg-border/60 hover:text-fg"
+            >
+              {sound.on ? "🔊" : "🔇"}
+            </button>
+            <button
+              title={theme.dark ? "Switch to light" : "Switch to dark"}
+              aria-label="Toggle theme"
+              onClick={theme.toggle}
+              className="shrink-0 rounded-md p-2 text-muted hover:bg-border/60 hover:text-fg"
+            >
+              {theme.dark ? "☀️" : "🌙"}
+            </button>
             <button
               title="Sign out"
               aria-label="Sign out"

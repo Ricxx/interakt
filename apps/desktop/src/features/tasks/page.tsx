@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { type MyTask, dueClass, dueLabel, useAddMyTask, useDeleteMyTask, useMyTasks, useTaskPeople, useUpdateMyTask } from "../../lib/tasks";
+import { useEffect, useState } from "react";
+import { type MyTask, dueClass, dueLabel, useAddMyTask, useDeleteMyTask, useMarkTasksRead, useMyTasks, useTaskPeople, useUpdateMyTask } from "../../lib/tasks";
 import { UnitView } from "./unit-view";
 import { TaskFeed } from "./feed";
 import { PageHeader } from "../../ui/page-header";
@@ -17,6 +17,8 @@ const COLUMNS = [
 export function TasksPage() {
   const { data, isLoading } = useMyTasks();
   const { data: peopleData } = useTaskPeople();
+  const markRead = useMarkTasksRead();
+  useEffect(() => { markRead.mutate(); }, []); // opening the board clears its nav badge
   const update = useUpdateMyTask();
   const del = useDeleteMyTask();
   const add = useAddMyTask();

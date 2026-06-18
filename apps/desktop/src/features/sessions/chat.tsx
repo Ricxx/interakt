@@ -4,6 +4,7 @@ import { Button } from "../../ui/button";
 import { Card } from "../../ui/card";
 import { Input } from "../../ui/input";
 import { cn } from "../../lib/cn";
+import { RefText } from "../../lib/ref-text";
 
 const EMOJIS = ["👍", "❤️", "😂", "🎉", "🙌", "👀"];
 // Stable light background per sender (literal classes so Tailwind keeps them).
@@ -78,7 +79,7 @@ function Bubble({ sessionId, m, showName, onReply }: { sessionId: string; m: Mes
               <span className="font-medium">{m.replyTo.name}</span>: {m.replyTo.body.slice(0, 80)}
             </button>
           )}
-          <div className="whitespace-pre-wrap break-words text-sm">{m.body}</div>
+          <div className="whitespace-pre-wrap break-words text-sm"><RefText text={m.body} /></div>
           <div className={cn("mt-0.5 text-right text-[10px]", m.mine ? "text-primary-fg/70" : "text-muted")}>
             {new Date(m.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
           </div>

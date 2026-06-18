@@ -3,7 +3,10 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { activities, activityPicks, activityVotes, brainstormComments, brainstormIdeas, brainstormLikes, pollVotes, rpsRounds, sessions, sessionParticipants, sessionTasks, triviaSubmissions, users } from "../../db/schema.js";
+import { activities, activityPicks, activityVotes, brainstormComments, brainstormIdeas, brainstormLikes, pollVotes, rpsRounds, sessions, sessionParticipants, sessionTasks, straws, surveys, surveyQuestions, surveyResponses, teamAssignments, triviaSubmissions, users, wordcloudEntries } from "../../db/schema.js";
+import { saveAnswers, submitResponse, findResponse } from "../surveys/respond.js";
+import { quizzes, quizQuestions, quizAnswers } from "../../db/schema.js";
+import { gradeAndStore } from "../quizzes/game.js";
 import { requireAuth } from "../../auth.js";
 import { hub } from "../../lib/realtime.js";
 import { canRunActivities, isInRoom } from "../../lib/sessionControl.js";
@@ -12,7 +15,7 @@ import { pollCsv } from "../poll/payload.js";
 import { recordAudit } from "../../lib/audit.js";
 
 const startBody = z.object({
-  type: z.enum(["RANDOMIZER", "NOMINATION", "BRAINSTORM", "RPS", "TASKS", "TASK_REVIEW", "TRIVIA", "POLL"]),
+  type: z.enum(["RANDOMIZER", "NOMINATION", "BRAINSTORM", "RPS", "TASKS", "TASK_REVIEW", "TRIVIA", "POLL", "WORDCLOUD", "DRAW_STRAWS", "TEAM_SELECT", "SURVEY", "QUIZ"]),
   title: z.string().min(1).max(120),
   draft: z.boolean().optional(), // pre-plan without launching
   agendaItemId: z.string().uuid().optional(), // tie a draft to an agenda item
@@ -34,6 +37,10 @@ const startBody = z.object({
       resultsVisibility: z.enum(["LIVE", "AFTER_VOTE", "HIDDEN"]).optional(),
       chartType: z.enum(["BAR", "DONUT"]).optional(),
       closeSeconds: z.number().int().min(10).max(3600).optional(),
+      maxPerPerson: z.number().int().min(1).max(10).optional(),
+      teamCount: z.number().int().min(2).max(6).optional(),
+      surveyId: z.string().uuid().optional(),
+      quizId: z.string().uuid().optional(),
     })
     .optional(),
 });
@@ -81,6 +88,9 @@ export function activityRoutes(app: FastifyInstance) {
       .values({ sessionId: session.id, type: parsed.data.type, title: parsed.data.title, startedBy: me, config: built.config, agendaItemId: session.activeAgendaId ?? null })
       .returning();
     if (parsed.data.type === "RPS") await db.insert(rpsRounds).values({ activityId: activity.id, roundNo: 1, deadlineAt: rpsDeadline() });
+    if (parsed.data.type === "DRAW_STRAWS") await seedStraws(activity.id, session);
+    if (parsed.data.type === "TEAM_SELECT") await seedTeams(activity.id, session, (built.config.teamCount as number) ?? 2);
+    if (parsed.data.type === "SURVEY") await openSurveyForActivity(built.config.surveyId as string);
     await notify(session.id);
     return { activity: { id: activity.id } };
   });
@@ -101,6 +111,9 @@ export function activityRoutes(app: FastifyInstance) {
     const agendaItemId = activity.agendaItemId ?? session.activeAgendaId ?? null;
     await db.update(activities).set({ state: "LIVE", config: built.config, startedBy: me, agendaItemId, createdAt: new Date() }).where(eq(activities.id, activity.id));
     if (activity.type === "RPS") await db.insert(rpsRounds).values({ activityId: activity.id, roundNo: 1, deadlineAt: rpsDeadline() });
+    if (activity.type === "DRAW_STRAWS") await seedStraws(activity.id, session);
+    if (activity.type === "TEAM_SELECT") await seedTeams(activity.id, session, (built.config.teamCount as number) ?? 2);
+    if (activity.type === "SURVEY") await openSurveyForActivity(built.config.surveyId as string);
     if (activity.agendaItemId) await db.update(sessions).set({ activeAgendaId: activity.agendaItemId }).where(eq(sessions.id, session.id));
     await notify(session.id);
     return { ok: true };
@@ -470,6 +483,136 @@ export function activityRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Word cloud: submit a word (anyone in the room, up to maxPerPerson distinct words).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/words", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ word: z.string().min(1).max(40) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "WORDCLOUD") return reply.code(403).send({ error: "not_in_room" });
+    const word = body.data.word.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!word) return reply.code(400).send({ error: "invalid_input" });
+    const max = ctx.activity.config?.maxPerPerson ?? 3;
+    const mine = await db.select({ word: wordcloudEntries.word }).from(wordcloudEntries).where(and(eq(wordcloudEntries.activityId, ctx.activity.id), eq(wordcloudEntries.userId, req.currentUser!.id)));
+    if (!mine.some((m) => m.word === word) && mine.length >= max) return reply.code(409).send({ error: "max_reached" });
+    await db.insert(wordcloudEntries).values({ activityId: ctx.activity.id, userId: req.currentUser!.id, word }).onConflictDoNothing();
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Draw straws: pick a straw (one per person). The straw's hidden length is revealed.
+  app.post<{ Params: { id: string; idx: string } }>("/api/activities/:id/straws/:idx/pick", { preHandler: requireAuth }, async (req, reply) => {
+    const me = req.currentUser!.id;
+    const ctx = await liveActivityInRoom(req.params.id, me);
+    if (!ctx || ctx.activity.type !== "DRAW_STRAWS") return reply.code(403).send({ error: "not_in_room" });
+    const idx = Number(req.params.idx);
+    if (!Number.isInteger(idx)) return reply.code(400).send({ error: "invalid_input" });
+    const alreadyMine = await db.select({ id: straws.id }).from(straws).where(and(eq(straws.activityId, ctx.activity.id), eq(straws.pickedBy, me)));
+    if (alreadyMine.length) return reply.code(409).send({ error: "already_drew" });
+    const [straw] = await db.select().from(straws).where(and(eq(straws.activityId, ctx.activity.id), eq(straws.idx, idx)));
+    if (!straw) return reply.code(404).send({ error: "not_found" });
+    // Atomic claim so two simultaneous picks can't take the same straw.
+    const claimed = await db.update(straws).set({ pickedBy: me, pickedAt: new Date() }).where(and(eq(straws.id, straw.id), isNull(straws.pickedBy))).returning({ id: straws.id });
+    if (!claimed.length) return reply.code(409).send({ error: "taken" });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Team selector: re-randomize the teams (host/co-host).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/teams/reshuffle", { preHandler: requireAuth }, async (req, reply) => {
+    const me = req.currentUser!.id;
+    const [activity] = await db.select().from(activities).where(eq(activities.id, req.params.id));
+    if (!activity || activity.state !== "LIVE" || activity.type !== "TEAM_SELECT") return reply.code(404).send({ error: "not_found" });
+    if (!(await canRunActivities(activity.sessionId, me))) return reply.code(403).send({ error: "not_allowed" });
+    const [session] = await db.select({ id: sessions.id, hostId: sessions.hostId }).from(sessions).where(eq(sessions.id, activity.sessionId));
+    await seedTeams(activity.id, session, activity.config?.teamCount ?? 2);
+    await notify(activity.sessionId);
+    return { ok: true };
+  });
+
+  // Team selector: move one person to a team (host/co-host).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/teams/move", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ userId: z.string().uuid(), teamIndex: z.number().int().min(0).max(5) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser!.id;
+    const [activity] = await db.select().from(activities).where(eq(activities.id, req.params.id));
+    if (!activity || activity.state !== "LIVE" || activity.type !== "TEAM_SELECT") return reply.code(404).send({ error: "not_found" });
+    if (!(await canRunActivities(activity.sessionId, me))) return reply.code(403).send({ error: "not_allowed" });
+    if (body.data.teamIndex >= (activity.config?.teamCount ?? 2)) return reply.code(400).send({ error: "bad_team" });
+    await db.update(teamAssignments).set({ teamIndex: body.data.teamIndex }).where(and(eq(teamAssignments.activityId, activity.id), eq(teamAssignments.userId, body.data.userId)));
+    await notify(activity.sessionId);
+    return { ok: true };
+  });
+
+  // In-meeting survey: fill it live. Anyone in the room can respond; access is room
+  // membership (not the survey's org scope). Reuses the shared response helpers.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/survey/save", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ ticket: z.string().optional(), page: z.number().int().min(0).optional(), answers: z.array(z.object({ questionId: z.string().uuid(), value: z.object({ choice: z.number().int().optional(), choices: z.array(z.number().int()).optional(), text: z.string().max(4000).optional(), scale: z.number().int().optional(), other: z.string().max(500).optional() }) })).max(200) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "SURVEY") return reply.code(403).send({ error: "not_in_room" });
+    const [sv] = await db.select().from(surveys).where(eq(surveys.id, ctx.activity.config?.surveyId ?? ""));
+    if (!sv) return reply.code(404).send({ error: "not_found" });
+    const r = await saveAnswers(sv, req.currentUser!, body.data);
+    if ("error" in r) return reply.code(409).send(r);
+    await notify(ctx.sessionId);
+    return { ok: true, ticket: r.ticket };
+  });
+
+  app.post<{ Params: { id: string } }>("/api/activities/:id/survey/submit", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ ticket: z.string().optional() }).safeParse(req.body ?? {});
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "SURVEY") return reply.code(403).send({ error: "not_in_room" });
+    const [sv] = await db.select().from(surveys).where(eq(surveys.id, ctx.activity.config?.surveyId ?? ""));
+    if (!sv) return reply.code(404).send({ error: "not_found" });
+    const r = await submitResponse(sv, req.currentUser!, body.data.ticket);
+    if ("error" in r) return reply.code(r.error === "no_response" ? 404 : 400).send(r);
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Live quiz: host drives the phases (lobby → question → reveal → … → podium).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/quiz/advance", { preHandler: requireAuth }, async (req, reply) => {
+    const me = req.currentUser!.id;
+    const [activity] = await db.select().from(activities).where(eq(activities.id, req.params.id));
+    if (!activity || activity.state !== "LIVE" || activity.type !== "QUIZ") return reply.code(404).send({ error: "not_found" });
+    if (!(await canRunActivities(activity.sessionId, me))) return reply.code(403).send({ error: "not_allowed" });
+    const cfg = activity.config ?? {};
+    const qs = await db.select({ id: quizQuestions.id, timeLimitSec: quizQuestions.timeLimitSec }).from(quizQuestions).where(eq(quizQuestions.quizId, cfg.quizId ?? "")).orderBy(quizQuestions.position);
+    const phase = cfg.quizPhase ?? "LOBBY";
+    const idx = cfg.quizIdx ?? -1;
+    const openQuestion = (i: number) => ({ quizPhase: "QUESTION", quizIdx: i, quizStartedAt: new Date().toISOString(), quizDeadline: new Date(Date.now() + (qs[i]?.timeLimitSec ?? 20) * 1000).toISOString() });
+    let next: Record<string, unknown> | null = null;
+    if (phase === "LOBBY") next = qs.length ? openQuestion(0) : { quizPhase: "PODIUM" };
+    else if (phase === "QUESTION") next = { quizPhase: "REVEAL" };
+    else if (phase === "REVEAL") next = idx + 1 < qs.length ? openQuestion(idx + 1) : { quizPhase: "PODIUM" };
+    if (next) await db.update(activities).set({ config: { ...cfg, ...next } }).where(eq(activities.id, activity.id));
+    await notify(activity.sessionId);
+    return { ok: true };
+  });
+
+  // Live quiz: a player locks an answer (once, before the deadline). Graded on submit.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/quiz/answer", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ answer: z.object({ indices: z.array(z.number().int()).optional(), bool: z.boolean().optional(), text: z.string().max(500).optional(), order: z.array(z.number().int()).optional(), value: z.number().optional() }) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser!.id;
+    const ctx = await liveActivityInRoom(req.params.id, me);
+    if (!ctx || ctx.activity.type !== "QUIZ") return reply.code(403).send({ error: "not_in_room" });
+    const cfg = ctx.activity.config ?? {};
+    if (cfg.quizPhase !== "QUESTION") return reply.code(409).send({ error: "not_open" });
+    if (cfg.quizDeadline && Date.now() > new Date(cfg.quizDeadline).getTime()) return reply.code(409).send({ error: "too_late" });
+    const qs = await db.select().from(quizQuestions).where(eq(quizQuestions.quizId, cfg.quizId ?? "")).orderBy(quizQuestions.position);
+    const idx = cfg.quizIdx ?? -1;
+    const q = qs[idx];
+    if (!q) return reply.code(409).send({ error: "not_open" });
+    const [existing] = await db.select({ id: quizAnswers.id }).from(quizAnswers).where(and(eq(quizAnswers.activityId, ctx.activity.id), eq(quizAnswers.questionId, q.id), eq(quizAnswers.userId, me)));
+    if (existing) return reply.code(409).send({ error: "already_answered" });
+    const question = { id: q.id, type: q.type, prompt: q.prompt, options: q.options, correct: q.correct, timeLimitSec: q.timeLimitSec, points: q.points, mediaKind: q.mediaKind, mediaUrl: q.mediaUrl };
+    await gradeAndStore(ctx.activity.id, question, idx > 0 ? qs[idx - 1].id : null, me, body.data.answer, cfg.quizStartedAt ? new Date(cfg.quizStartedAt).getTime() : Date.now(), Date.now());
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
   // Poll: close voting (host/admin, or anyone past the auto-close deadline).
   app.post<{ Params: { id: string } }>("/api/activities/:id/poll/close", { preHandler: requireAuth }, async (req, reply) => {
     const me = req.currentUser!.id;
@@ -503,6 +646,33 @@ function shuffle<T>(arr: T[]): T[] {
     [a[i], a[j]] = [a[j], a[i]];
   }
   return a;
+}
+
+// One straw per person in the room, with distinct lengths 1..N shuffled across positions
+// (so a straw's display slot tells you nothing about its length).
+async function seedStraws(activityId: string, session: { id: string; hostId: string }) {
+  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED")));
+  const people = new Set(joined.map((j) => j.userId));
+  people.add(session.hostId);
+  const n = Math.max(2, people.size);
+  const lengths = shuffle(Array.from({ length: n }, (_, i) => i + 1));
+  await db.insert(straws).values(lengths.map((length, idx) => ({ activityId, idx, length })));
+}
+
+// Launching a survey in a session locks its structure (DRAFT → OPEN). It needs no org scope —
+// the in-session respond path gates on room membership, not the survey's distribution.
+async function openSurveyForActivity(surveyId: string) {
+  if (surveyId) await db.update(surveys).set({ status: "OPEN" }).where(and(eq(surveys.id, surveyId), eq(surveys.status, "DRAFT")));
+}
+
+// Randomly split the room into `teamCount` teams (balanced — round-robin over a shuffle).
+async function seedTeams(activityId: string, session: { id: string; hostId: string }, teamCount: number) {
+  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED")));
+  const people = new Set(joined.map((j) => j.userId));
+  people.add(session.hostId);
+  const order = shuffle([...people]);
+  await db.delete(teamAssignments).where(eq(teamAssignments.activityId, activityId));
+  if (order.length) await db.insert(teamAssignments).values(order.map((userId, i) => ({ activityId, userId, teamIndex: i % teamCount })));
 }
 
 // Selection window: 30s of picking + a buffer for the intro/reveal animation that runs first.
@@ -541,6 +711,27 @@ async function buildActivityConfig(
   if (type === "TRIVIA") {
     const secs = c.timerSeconds;
     return { config: { timerSeconds: secs, triviaPhase: "COLLECTING", triviaDeadline: secs ? new Date(Date.now() + secs * 1000).toISOString() : undefined } };
+  }
+  if (type === "WORDCLOUD") return { config: { maxPerPerson: c.maxPerPerson ?? 3 } };
+  if (type === "DRAW_STRAWS") return { config: {} };
+  if (type === "TEAM_SELECT") return { config: { teamCount: c.teamCount ?? 2 } };
+  if (type === "SURVEY") {
+    if (!c.surveyId) return { error: "no_survey" };
+    const [sv] = await db.select().from(surveys).where(eq(surveys.id, c.surveyId));
+    const [host] = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, session.hostId));
+    if (!sv || sv.tenantId !== host?.tenantId) return { error: "no_survey" };
+    const [q] = await db.select({ id: surveyQuestions.id }).from(surveyQuestions).where(eq(surveyQuestions.surveyId, sv.id)).limit(1);
+    if (!q) return { error: "survey_empty" };
+    return { config: { surveyId: sv.id } };
+  }
+  if (type === "QUIZ") {
+    if (!c.quizId) return { error: "no_quiz" };
+    const [qz] = await db.select().from(quizzes).where(eq(quizzes.id, c.quizId));
+    const [host] = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, session.hostId));
+    if (!qz || qz.tenantId !== host?.tenantId) return { error: "no_quiz" };
+    const [q] = await db.select({ id: quizQuestions.id }).from(quizQuestions).where(eq(quizQuestions.quizId, qz.id)).limit(1);
+    if (!q) return { error: "quiz_empty" };
+    return { config: { quizId: qz.id, quizPhase: "LOBBY", quizIdx: -1 } };
   }
   if (type === "POLL") {
     if (!c.pollOptions || c.pollOptions.length < 2) return { error: "poll_needs_options" };
