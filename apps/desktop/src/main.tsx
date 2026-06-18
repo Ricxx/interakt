@@ -34,6 +34,7 @@ import { QuizzesPage } from "./features/quizzes/page";
 import { QuizBuilderPage } from "./features/quizzes/builder";
 import { WellnessPage } from "./features/wellness/page";
 import { RecognitionPage } from "./features/recognition/page";
+import { ProfileProvider } from "./features/profile/overlay";
 import { initTheme } from "./lib/prefs";
 import "./index.css";
 
@@ -56,7 +57,7 @@ function App() {
   if (!me) return <LoginPage />;
 
   return (
-    <>
+    <ProfileProvider>
       <InviteToasts />
       <Routes>
         <Route element={<Shell />}>
@@ -88,7 +89,7 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
-    </>
+    </ProfileProvider>
   );
 }
 
