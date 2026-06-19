@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { type NoticePost, useAddNoticeComment, useNoticeComments, usePinNotice, usePostNotice } from "../../lib/boards";
+import { AddToCalendar } from "../calendar/add-to-calendar";
 import { Button } from "../../ui/button";
 import { Card } from "../../ui/card";
 import { Input } from "../../ui/input";
@@ -86,7 +87,10 @@ function NoticeCard({ boardId, canPin, post }: { boardId: string; canPin: boolea
         by {post.authorName}
         {post.activeUntil && <> · {post.archived ? "expired" : "active until"} {new Date(post.activeUntil).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</>}
       </div>
-      <button onClick={() => setOpen(!open)} className="mt-1 text-xs text-muted hover:text-fg">💬 {post.comments} comment{post.comments === 1 ? "" : "s"}</button>
+      <div className="mt-1 flex items-center gap-3">
+        <button onClick={() => setOpen(!open)} className="text-xs text-muted hover:text-fg">💬 {post.comments} comment{post.comments === 1 ? "" : "s"}</button>
+        <AddToCalendar defaultTitle={post.title} />
+      </div>
       {open && (
         <div className="mt-1 space-y-1 border-t border-border pt-1">
           {data?.comments.map((c) => (

@@ -12,6 +12,9 @@ export type CurrentUser = {
   email: string;
   displayName: string;
   role: string;
+  avatarUrl: string | null;
+  statusText: string | null;
+  flair: string | null;
 };
 
 // Make req.currentUser available everywhere (set by the loadUser hook below).
@@ -30,12 +33,15 @@ async function getUserById(id: string): Promise<CurrentUser | null> {
       displayName: users.displayName,
       role: users.role,
       status: users.status,
+      avatarUrl: users.avatarUrl,
+      statusText: users.statusText,
+      flair: users.flair,
     })
     .from(users)
     .where(eq(users.id, id))
     .limit(1);
   if (!u || u.status !== "ACTIVE") return null;
-  return { id: u.id, tenantId: u.tenantId, email: u.email, displayName: u.displayName, role: u.role };
+  return { id: u.id, tenantId: u.tenantId, email: u.email, displayName: u.displayName, role: u.role, avatarUrl: u.avatarUrl, statusText: u.statusText, flair: u.flair };
 }
 
 /** Reads + verifies the signed session cookie and loads the user (or null). */

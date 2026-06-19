@@ -183,6 +183,181 @@
       "when": 1781762618880,
       "tag": "0025_recognition_likes_jobtitle",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1781785225791,
+      "tag": "0026_recognition_comments",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1781785786918,
+      "tag": "0027_recognition_anon",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1781786523147,
+      "tag": "0028_tenant_timezone",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1781787953187,
+      "tag": "0029_events_gallery",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1781790000000,
+      "tag": "0030_scope_relative",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1781791329774,
+      "tag": "0031_usage_log_toggle",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1781792253376,
+      "tag": "0032_event_contributions",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1781792868123,
+      "tag": "0033_recognition_reads",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1781795986257,
+      "tag": "0034_profile_avatar_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1781797005500,
+      "tag": "0035_tournaments",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1781797488912,
+      "tag": "0036_points_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1781797945708,
+      "tag": "0037_checkin_rewards",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1781798951936,
+      "tag": "0038_event_list_link",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1781807915893,
+      "tag": "0039_achievements",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1781808726354,
+      "tag": "0040_marketplace",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1781809660648,
+      "tag": "0041_profile_flair",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1781811108811,
+      "tag": "0042_tournament_signup",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1781817310580,
+      "tag": "0043_tournament_match_throws",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1781819814566,
+      "tag": "0044_profile_hobbies_highschool",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1781820172107,
+      "tag": "0045_profile_augment_slots",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1781826246580,
+      "tag": "0046_achievement_scope_schedule",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1781829980265,
+      "tag": "0047_qna_queue",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1781830659461,
+      "tag": "0048_dot_votes",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1781830948333,
+      "tag": "0049_fist_votes",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1781832069589,
+      "tag": "0050_poker_votes",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 
-export type Me = { id: string; email: string; displayName: string; role: string };
+export type Me = { id: string; email: string; displayName: string; role: string; avatarUrl: string | null; statusText: string | null; flair: string | null };
 
 // The current user. `null` (not undefined) once we know they're logged out.
 export function useMe() {

@@ -1,71 +1,185 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api } from "../../lib/api";
+import { useMe } from "../../lib/auth";
 import { useMeInvites } from "../../lib/sessions";
+import { useRequests } from "../../lib/requests";
+import { useEvents } from "../../lib/events";
+import { useProfile } from "../../lib/profile";
+import { useTenantSettings } from "../../lib/tenant";
+import { personalGuidance } from "../../lib/wellness";
+import { usePoints, useCheckin, useLottery, useToggleLeave } from "../../lib/points";
+import { badgeOf } from "../../lib/recognition";
+import { Button } from "../../ui/button";
+import { KIND_META, fmtWhen } from "../events/page";
+import { useOpenProfile } from "../profile/overlay";
 import { TaskFeed } from "../tasks/feed";
+import { Avatar } from "../../ui/avatar";
 import { Card } from "../../ui/card";
-import { PageHeader } from "../../ui/page-header";
 
-type OrgNode = { id: string; name: string; nodeType: string; path: string };
+function CheckinCard() {
+  const navigate = useNavigate();
+  const { data: p } = usePoints();
+  const checkin = useCheckin();
+  const leave = useToggleLeave();
+  const lottery = useLottery();
+  if (!p) return null;
+  const prize = checkin.data?.prize;
+  const won = lottery.data?.won;
+  return (
+    <Card className="mb-6 flex flex-wrap items-center gap-4">
+      <div className="flex items-center gap-2">
+        <span className="text-2xl">🔥</span>
+        <div><div className="text-xl font-semibold text-fg">{p.streak}-day streak</div><div className="text-xs text-muted">{p.balance} points</div></div>
+      </div>
+      {prize && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700">🎁 You won: {prize.label}</span>}
+      {won != null && <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-medium text-violet-700">🎲 Lottery: +{won}</span>}
+      <div className="ml-auto flex items-center gap-3">
+        {!p.lotteryToday && <button onClick={() => lottery.mutate()} disabled={lottery.isPending} className="text-xs text-primary hover:underline">🎲 Daily draw</button>}
+        <button onClick={() => navigate("/calendar")} className="text-xs text-primary hover:underline">View calendar →</button>
+        {p.checkedInToday ? (
+          <span className="text-sm text-emerald-600">✓ Checked in today</span>
+        ) : (
+          <>
+            <Button disabled={checkin.isPending} onClick={() => checkin.mutate()}>Daily check-in</Button>
+            <button onClick={() => leave.mutate(undefined)} className="text-xs text-muted hover:underline" title="Mark today as leave so it won't break your streak">On leave today</button>
+          </>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+const TRY_OUT = [
+  { to: "/sessions", icon: "🎤", label: "Run a session" },
+  { to: "/recognition", icon: "🎉", label: "Give a big-up" },
+  { to: "/events", icon: "📅", label: "Plan an event" },
+  { to: "/wellness", icon: "💙", label: "Wellness check-in" },
+  { to: "/surveys", icon: "📋", label: "Build a survey" },
+  { to: "/quizzes", icon: "🎯", label: "Make a quiz" },
+  { to: "/lists", icon: "🗂️", label: "Start a list" },
+  { to: "/boards", icon: "📌", label: "Post to a board" },
+];
 
 export function DashboardPage() {
   const navigate = useNavigate();
+  const { data: me } = useMe();
   const { data: invites } = useMeInvites();
-  const { data, isLoading } = useQuery({
-    queryKey: ["org-nodes"],
-    queryFn: () => api<{ nodes: OrgNode[] }>("/api/org/nodes"),
-  });
+  const { data: requests } = useRequests();
+  const { data: eventsData } = useEvents();
+  const { data: profile } = useProfile(me?.id ?? null);
+  const { data: settings } = useTenantSettings();
+  const openProfile = useOpenProfile();
+  const [guidance] = useState(personalGuidance);
 
-  const active = invites?.invites ?? [];
+  const sessions = invites?.invites ?? [];
+  const awaitingMe = (requests?.queue ?? []).filter((r) => r.status === "PENDING" && !r.iApproved);
+  const upcoming = (eventsData?.events ?? []).filter((e) => e.startAt && new Date(e.startAt).getTime() >= Date.now() - 86400_000).sort((a, b) => (a.startAt! < b.startAt! ? -1 : 1)).slice(0, 4);
+  const received = profile?.received ?? [];
+  const firstName = (me?.displayName ?? "there").split(" ")[0];
+  const showPics = settings?.profilePicsEnabled !== false;
+
+  // Only surface tiles that actually need attention — no scary "0 X" tiles.
+  const tiles = [
+    { label: "Invitations & live", n: sessions.length, to: "/sessions" },
+    { label: "Awaiting your approval", n: awaitingMe.length, to: "/requests" },
+    { label: "Upcoming events", n: upcoming.length, to: "/events" },
+  ].filter((t) => t.n > 0);
 
   return (
-    <div>
-      <PageHeader title="Dashboard" subtitle="Your organization at a glance." />
+    <div className="max-w-4xl">
+      <div className="mb-6 flex items-center gap-4">
+        <Avatar name={me?.displayName ?? "?"} url={showPics ? me?.avatarUrl : null} size={56} />
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold text-fg">Welcome, {firstName}{me?.flair ? ` ${me.flair}` : ""}</h1>
+          <button onClick={() => me && openProfile(me.id)} className="text-sm text-muted hover:text-fg" title="Edit your profile">
+            {me?.statusText ? <span className="italic">“{me.statusText}”</span> : <span className="text-primary">+ Set a status</span>}
+          </button>
+        </div>
+      </div>
 
-      {active.length > 0 && (
-        <Card className="mb-6">
-          <h2 className="mb-3 text-sm font-semibold text-muted">Invitations & live sessions</h2>
-          <ul className="space-y-1">
-            {active.map((i) => {
-              const sched = i.state === "SCHEDULED";
-              return (
-                <li key={i.id} className="flex items-center justify-between text-sm">
-                  <span>
-                    {i.title}{" "}
-                    <span className="text-xs text-muted">
-                      · {i.hostName} · {sched ? (i.scheduledAt ? new Date(i.scheduledAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "scheduled") : "live now"}
-                    </span>
-                  </span>
-                  <button onClick={() => navigate(`/sessions/${i.id}`)} className="text-xs text-primary hover:underline">
-                    {sched ? "View" : i.myState === "JOINED" ? "Open" : "Join"}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+      {guidance.rough && (
+        <Card className="mb-6 border-amber-300 bg-amber-50/40">
+          <p className="text-sm text-fg">You've flagged feeling stressed a few times lately — it's okay to ease off. <button onClick={() => navigate("/wellness")} className="font-medium text-primary hover:underline">Open Wellness</button> for support.</p>
         </Card>
       )}
 
-      <Card className="mb-6">
+      <CheckinCard />
+
+
+      {tiles.length > 0 && (
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {tiles.map((t) => (
+            <button key={t.label} onClick={() => navigate(t.to)} className="rounded-xl border border-border bg-surface p-4 text-left hover:bg-border/30">
+              <div className="text-2xl font-semibold text-fg">{t.n}</div>
+              <div className="text-xs text-muted">{t.label}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-muted">Coming up</h2>
+            <button onClick={() => navigate("/events")} className="text-xs text-primary hover:underline">All events</button>
+          </div>
+          {sessions.length === 0 && upcoming.length === 0 ? (
+            <p className="text-sm text-muted">Nothing scheduled.</p>
+          ) : (
+            <ul className="space-y-2">
+              {sessions.slice(0, 3).map((i) => (
+                <li key={i.id} className="flex cursor-pointer items-center gap-2 text-sm hover:opacity-80" onClick={() => navigate(`/sessions/${i.id}`)}>
+                  <span>🎤</span><span className="min-w-0 flex-1 truncate text-fg">{i.title}</span>
+                  <span className="shrink-0 text-xs text-muted">{i.state === "SCHEDULED" ? (i.scheduledAt ? fmtWhen(i.scheduledAt, settings?.timezone) : "scheduled") : "live now"}</span>
+                </li>
+              ))}
+              {upcoming.map((e) => (
+                <li key={e.id} className="flex cursor-pointer items-center gap-2 text-sm hover:opacity-80" onClick={() => navigate(`/events/${e.id}`)}>
+                  <span>{KIND_META[e.kind].icon}</span><span className="min-w-0 flex-1 truncate text-fg">{e.title}</span>
+                  <span className="shrink-0 text-xs text-muted">{e.startAt ? fmtWhen(e.startAt, settings?.timezone) : ""}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-muted">Big-ups &amp; awards you've received</h2>
+            <button onClick={() => navigate("/recognition")} className="text-xs text-primary hover:underline">All</button>
+          </div>
+          {received.length === 0 ? (
+            <p className="text-sm text-muted">Nothing yet — your big-ups will show here.</p>
+          ) : (
+            <ul className="space-y-2">
+              {received.slice(0, 4).map((r) => {
+                const b = badgeOf(r.badge);
+                return (
+                  <li key={r.id} className="flex items-start gap-2 text-sm">
+                    <span className="text-lg">{r.kind === "AWARD" ? "🏆" : b.emoji}</span>
+                    <div className="min-w-0 flex-1"><span className="text-xs text-muted">from {r.fromName}</span><p className="truncate text-fg">{r.message}</p></div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </Card>
+      </div>
+
+      <Card className="mt-6">
         <h2 className="mb-3 text-sm font-semibold text-muted">Recent task activity</h2>
         <TaskFeed limit={3} seeAll />
       </Card>
 
-      <Card>
-        <h2 className="mb-3 text-sm font-semibold text-muted">Org structure</h2>
-        {isLoading && <p className="text-sm text-muted">Loading…</p>}
-        {data && data.nodes.length === 0 && (
-          <p className="text-sm text-muted">No org nodes yet. Add them under Org structure.</p>
-        )}
-        <ul className="space-y-1">
-          {data?.nodes.map((n) => (
-            <li key={n.id} className="flex items-center gap-2 text-sm">
-              <span className="rounded bg-border/60 px-1.5 py-0.5 text-xs text-muted">{n.nodeType}</span>
-              <span>{n.name}</span>
-              <span className="text-xs text-muted">{n.path}</span>
-            </li>
+      <Card className="mt-6">
+        <h2 className="mb-3 text-sm font-semibold text-muted">Try out</h2>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {TRY_OUT.map((t) => (
+            <button key={t.to} onClick={() => navigate(t.to)} className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-border/30">
+              <span className="text-lg">{t.icon}</span><span className="min-w-0 truncate text-fg">{t.label}</span>
+            </button>
           ))}
-        </ul>
+        </div>
       </Card>
     </div>
   );

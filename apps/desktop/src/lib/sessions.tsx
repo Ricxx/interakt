@@ -38,10 +38,29 @@ export type CurrentActivity = {
   trivia?: Trivia;
   poll?: Poll;
   wordcloud?: WordCloud;
+  qna?: Qna;
+  dot?: DotVote;
+  fist?: Fist;
+  poker?: Poker;
   straws?: Straws;
   teams?: Teams;
   survey?: SurveyActivity;
   quiz?: QuizActivity | null;
+  board?: BoardGame;
+};
+
+export type BoardGame = {
+  game: "TIC_TAC_TOE" | "CONNECT_FOUR" | "CHECKERS";
+  player1: { name: string };
+  player2: { name: string };
+  myPlayer: 1 | 2 | null;
+  cells: number[];
+  turn: 1 | 2;
+  winner: 1 | 2 | "TIE" | null;
+  lastMove: number | null;
+  mustJumpFrom: number | null;
+  agreementKind: string;
+  agreementText: string;
 };
 
 export type QuizActivity = {
@@ -72,6 +91,12 @@ export type Team = { index: number; name: string; members: { id: string; name: s
 export type Teams = { teamCount: number; teams: Team[]; myTeam: number | null };
 
 export type WordCloud = { prompt: string; words: { text: string; count: number }[]; total: number; mineCount: number; maxPerPerson: number };
+export type QnaQuestion = { id: string; body: string; answered: boolean; mine: boolean; authorName: string | null; upvotes: number; myUpvote: boolean };
+export type Qna = { anonymous: boolean; canModerate: boolean; total: number; open: number; questions: QnaQuestion[] };
+export type DotOption = { index: number; label: string; dots: number; mine: number };
+export type DotVote = { question: string; budget: number; voterCount: number; totalDots: number; myUsed: number; myRemaining: number; options: DotOption[] };
+export type Fist = { prompt: string; scale: number; count: number; average: number; distribution: { value: number; count: number }[]; myVote: number | null };
+export type Poker = { prompt: string; deck: string[]; revealed: boolean; votedCount: number; myCard: string | null; voters: { name: string; card: string | null }[]; distribution: { card: string; count: number }[] | null; consensus: boolean };
 export type Straws = {
   straws: { idx: number; picked: boolean; pickerName: string | null; length: number | null }[];
   total: number;
@@ -341,6 +366,22 @@ export function useRpsPick(sessionId: string, activityId: string) {
   });
 }
 
+// Board games (tic-tac-toe / connect four / checkers): make a move, or rematch once it's over.
+export function useBoardMove(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (move: number | { from: number; to: number }) => api(`/api/activities/${activityId}/board/move`, { method: "POST", body: JSON.stringify({ move }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useBoardRematch(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api(`/api/activities/${activityId}/board/rematch`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+
 // Resolve a round whose lock-in deadline has passed (non-lockers forfeit). Safe to call from any client.
 export function useRpsTimeout(sessionId: string, activityId: string) {
   const qc = useQueryClient();
@@ -422,6 +463,55 @@ export function useSubmitWord(sessionId: string, activityId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (word: string) => api(`/api/activities/${activityId}/words`, { method: "POST", body: JSON.stringify({ word }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useQnaAsk(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: string) => api(`/api/activities/${activityId}/qna/ask`, { method: "POST", body: JSON.stringify({ body }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useQnaUpvote(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (qid: string) => api(`/api/activities/${activityId}/qna/${qid}/upvote`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useQnaAnswered(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { qid: string; answered: boolean }) => api(`/api/activities/${activityId}/qna/${v.qid}/answered`, { method: "POST", body: JSON.stringify({ answered: v.answered }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useDotAllocate(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { optionIndex: number; dots: number }) => api(`/api/activities/${activityId}/dot/allocate`, { method: "POST", body: JSON.stringify(v) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useFistVote(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (value: number) => api(`/api/activities/${activityId}/fist/vote`, { method: "POST", body: JSON.stringify({ value }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function usePokerVote(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (card: string) => api(`/api/activities/${activityId}/poker/vote`, { method: "POST", body: JSON.stringify({ card }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function usePokerReveal(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (reset?: boolean) => api(`/api/activities/${activityId}/poker/reveal`, { method: "POST", body: JSON.stringify({ reset: !!reset }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
   });
 }

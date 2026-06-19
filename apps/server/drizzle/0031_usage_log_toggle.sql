@@ -1,0 +1,1 @@
+ALTER TABLE "tenants" ADD COLUMN "usage_log_enabled" boolean DEFAULT false NOT NULL;

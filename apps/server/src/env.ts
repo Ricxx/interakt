@@ -23,6 +23,15 @@ export const env = {
   // Used to build invite links in emails.
   appUrl: process.env.APP_URL ?? "http://localhost:5173",
   emailFrom: process.env.EMAIL_FROM ?? "CES <no-reply@ces.local>",
+  // Object storage (MinIO/S3) for uploaded files (avatars, gallery photos). Defaults to the dev compose.
+  storage: {
+    endPoint: process.env.MINIO_ENDPOINT ?? "127.0.0.1",
+    port: Number(process.env.MINIO_PORT ?? 9000),
+    useSSL: process.env.MINIO_SSL === "true",
+    accessKey: process.env.MINIO_ACCESS_KEY ?? "ces",
+    secretKey: process.env.MINIO_SECRET_KEY ?? "ces-secret",
+    bucket: process.env.MINIO_BUCKET ?? "ces-uploads",
+  },
   // Optional. If unset, emails are printed to the console (dev). Works with Mailgun,
   // Postmark, SES, etc. — any SMTP host.
   smtp: smtpHost

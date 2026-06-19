@@ -29,8 +29,8 @@ const resetBody = z.object({ token: z.string().min(1), password: z.string().min(
 
 const RESET_TTL_MS = 60 * 60 * 1000; // 1h
 
-function publicUser(u: { id: string; email: string; displayName: string; role: string }) {
-  return { id: u.id, email: u.email, displayName: u.displayName, role: u.role };
+function publicUser(u: { id: string; email: string; displayName: string; role: string; avatarUrl?: string | null; statusText?: string | null; flair?: string | null }) {
+  return { id: u.id, email: u.email, displayName: u.displayName, role: u.role, avatarUrl: u.avatarUrl ?? null, statusText: u.statusText ?? null, flair: u.flair ?? null };
 }
 
 export function authRoutes(app: FastifyInstance) {

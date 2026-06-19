@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { activities, activityPicks, activityVotes, brainstormComments, brainstormIdeas, brainstormLikes, pollVotes, rpsRounds, sessions, sessionParticipants, sessionTasks, straws, surveys, surveyQuestions, surveyResponses, teamAssignments, triviaSubmissions, users, wordcloudEntries } from "../../db/schema.js";
+import { activities, activityPicks, activityVotes, brainstormComments, brainstormIdeas, brainstormLikes, dotVotes, fistVotes, pokerVotes, pollVotes, qnaQuestions, qnaUpvotes, rpsRounds, sessions, sessionParticipants, sessionTasks, straws, surveys, surveyQuestions, surveyResponses, teamAssignments, triviaSubmissions, users, wordcloudEntries } from "../../db/schema.js";
 import { saveAnswers, submitResponse, findResponse } from "../surveys/respond.js";
 import { quizzes, quizQuestions, quizAnswers } from "../../db/schema.js";
 import { gradeAndStore } from "../quizzes/game.js";
@@ -13,9 +13,14 @@ import { canRunActivities, isInRoom } from "../../lib/sessionControl.js";
 import { recordTaskEvent } from "../tasks/events.js";
 import { pollCsv } from "../poll/payload.js";
 import { recordAudit } from "../../lib/audit.js";
+import { type BoardGame, initBoard, applyMove } from "./boardgames.js";
+import { POKER_DECK } from "../poker/payload.js";
+
+const BOARD_GAMES = ["TIC_TAC_TOE", "CONNECT_FOUR", "CHECKERS"] as const;
+const isBoardGame = (t: string): t is BoardGame => (BOARD_GAMES as readonly string[]).includes(t);
 
 const startBody = z.object({
-  type: z.enum(["RANDOMIZER", "NOMINATION", "BRAINSTORM", "RPS", "TASKS", "TASK_REVIEW", "TRIVIA", "POLL", "WORDCLOUD", "DRAW_STRAWS", "TEAM_SELECT", "SURVEY", "QUIZ"]),
+  type: z.enum(["RANDOMIZER", "NOMINATION", "BRAINSTORM", "RPS", "TASKS", "TASK_REVIEW", "TRIVIA", "POLL", "WORDCLOUD", "DRAW_STRAWS", "TEAM_SELECT", "SURVEY", "QUIZ", "QNA", "DOT_VOTE", "FIST", "POKER", "TIC_TAC_TOE", "CONNECT_FOUR", "CHECKERS"]),
   title: z.string().min(1).max(120),
   draft: z.boolean().optional(), // pre-plan without launching
   agendaItemId: z.string().uuid().optional(), // tie a draft to an agenda item
@@ -38,6 +43,8 @@ const startBody = z.object({
       chartType: z.enum(["BAR", "DONUT"]).optional(),
       closeSeconds: z.number().int().min(10).max(3600).optional(),
       maxPerPerson: z.number().int().min(1).max(10).optional(),
+      dotOptions: z.array(z.string().min(1).max(120)).min(2).max(12).optional(),
+      dotBudget: z.number().int().min(1).max(20).optional(),
       teamCount: z.number().int().min(2).max(6).optional(),
       surveyId: z.string().uuid().optional(),
       quizId: z.string().uuid().optional(),
@@ -360,6 +367,40 @@ export function activityRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Board games (tic-tac-toe / connect four / checkers): a player makes a move. Server-authoritative —
+  // the rules validate it's your turn and the move is legal; board state lives in activity.config.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/board/move", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ move: z.union([z.number().int(), z.object({ from: z.number().int(), to: z.number().int() })]) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser!.id;
+    const [activity] = await db.select().from(activities).where(eq(activities.id, req.params.id));
+    const type = activity?.type ?? "";
+    if (!activity || activity.state !== "LIVE" || !isBoardGame(type)) return reply.code(404).send({ error: "not_found" });
+    const cfg = activity.config ?? {};
+    const slot = cfg.player1Id === me ? 1 : cfg.player2Id === me ? 2 : null;
+    if (!slot) return reply.code(403).send({ error: "not_a_player" });
+    const state = { board: cfg.board ?? [], turn: cfg.turn ?? 1, winner: cfg.winner ?? null, lastMove: cfg.lastMove ?? null, mustJumpFrom: cfg.mustJumpFrom ?? null };
+    const res = applyMove(type, state, slot, body.data.move);
+    if ("error" in res) return reply.code(409).send({ error: res.error });
+    await db.update(activities).set({ config: { ...cfg, ...res.state } }).where(eq(activities.id, activity.id));
+    await notify(activity.sessionId);
+    return { ok: true };
+  });
+
+  // Rematch: once a game is over, either player resets the board for another round.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/board/rematch", { preHandler: requireAuth }, async (req, reply) => {
+    const me = req.currentUser!.id;
+    const [activity] = await db.select().from(activities).where(eq(activities.id, req.params.id));
+    const type = activity?.type ?? "";
+    if (!activity || activity.state !== "LIVE" || !isBoardGame(type)) return reply.code(404).send({ error: "not_found" });
+    const cfg = activity.config ?? {};
+    if (cfg.player1Id !== me && cfg.player2Id !== me) return reply.code(403).send({ error: "not_a_player" });
+    if (!cfg.winner) return reply.code(409).send({ error: "game_in_progress" });
+    await db.update(activities).set({ config: { ...cfg, ...initBoard(type) } }).where(eq(activities.id, activity.id));
+    await notify(activity.sessionId);
+    return { ok: true };
+  });
+
   // Tasks: anyone in the room can jot a task (optionally a subtask) on the board this activity drives.
   app.post<{ Params: { id: string } }>("/api/activities/:id/tasks", { preHandler: requireAuth }, async (req, reply) => {
     const body = z.object({ title: z.string().min(1).max(200), assigneeId: z.string().uuid().nullish(), dueDate: z.string().date().nullish(), parentId: z.string().uuid().nullish() }).safeParse(req.body);
@@ -479,6 +520,112 @@ export function activityRoutes(app: FastifyInstance) {
       .insert(pollVotes)
       .values({ activityId: ctx.activity.id, voterId: req.currentUser!.id, optionIndex: body.data.optionIndex })
       .onConflictDoUpdate({ target: [pollVotes.activityId, pollVotes.voterId], set: { optionIndex: body.data.optionIndex } });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Q&A: ask a question (anyone in the room).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/qna/ask", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ body: z.string().trim().min(1).max(500) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "QNA") return reply.code(403).send({ error: "not_in_room" });
+    await db.insert(qnaQuestions).values({ activityId: ctx.activity.id, authorId: req.currentUser!.id, body: body.data.body });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Q&A: toggle an upvote on a question (anyone in the room, including your own).
+  app.post<{ Params: { id: string; qid: string } }>("/api/activities/:id/qna/:qid/upvote", { preHandler: requireAuth }, async (req, reply) => {
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "QNA") return reply.code(403).send({ error: "not_in_room" });
+    const [q] = await db.select({ id: qnaQuestions.id }).from(qnaQuestions).where(and(eq(qnaQuestions.id, req.params.qid), eq(qnaQuestions.activityId, ctx.activity.id)));
+    if (!q) return reply.code(404).send({ error: "not_found" });
+    const me = req.currentUser!.id;
+    const del = await db.delete(qnaUpvotes).where(and(eq(qnaUpvotes.questionId, q.id), eq(qnaUpvotes.userId, me))).returning({ q: qnaUpvotes.questionId });
+    if (!del.length) await db.insert(qnaUpvotes).values({ questionId: q.id, userId: me });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Q&A: host/co-host marks a question answered (or re-opens it).
+  app.post<{ Params: { id: string; qid: string } }>("/api/activities/:id/qna/:qid/answered", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ answered: z.boolean().optional() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await hostActivity(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "QNA") return reply.code(403).send({ error: "not_allowed" });
+    const [q] = await db.select({ answered: qnaQuestions.answered }).from(qnaQuestions).where(and(eq(qnaQuestions.id, req.params.qid), eq(qnaQuestions.activityId, ctx.activity.id)));
+    if (!q) return reply.code(404).send({ error: "not_found" });
+    await db.update(qnaQuestions).set({ answered: body.data.answered ?? !q.answered }).where(eq(qnaQuestions.id, req.params.qid));
+    await notify(ctx.activity.sessionId);
+    return { ok: true };
+  });
+
+  // Dot voting: set how many of your dots sit on one option (0 clears it). Total can't exceed the budget.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/dot/allocate", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ optionIndex: z.number().int().min(0), dots: z.number().int().min(0).max(20) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "DOT_VOTE") return reply.code(403).send({ error: "not_in_room" });
+    const cfg = ctx.activity.config ?? {};
+    const budget = cfg.dotBudget ?? 5;
+    if (body.data.optionIndex >= (cfg.dotOptions?.length ?? 0)) return reply.code(400).send({ error: "bad_option" });
+    const me = req.currentUser!.id;
+    const mine = await db.select({ optionIndex: dotVotes.optionIndex, dots: dotVotes.dots }).from(dotVotes).where(and(eq(dotVotes.activityId, ctx.activity.id), eq(dotVotes.voterId, me)));
+    const otherSum = mine.filter((m) => m.optionIndex !== body.data.optionIndex).reduce((a, m) => a + m.dots, 0);
+    if (otherSum + body.data.dots > budget) return reply.code(409).send({ error: "over_budget" });
+    if (body.data.dots === 0) {
+      await db.delete(dotVotes).where(and(eq(dotVotes.activityId, ctx.activity.id), eq(dotVotes.voterId, me), eq(dotVotes.optionIndex, body.data.optionIndex)));
+    } else {
+      await db.insert(dotVotes).values({ activityId: ctx.activity.id, voterId: me, optionIndex: body.data.optionIndex, dots: body.data.dots }).onConflictDoUpdate({ target: [dotVotes.activityId, dotVotes.voterId, dotVotes.optionIndex], set: { dots: body.data.dots } });
+    }
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Planning Poker: pick (or change) your card while hidden (anyone in the room).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/poker/vote", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ card: z.string().min(1).max(8) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "POKER") return reply.code(403).send({ error: "not_in_room" });
+    const cfg = ctx.activity.config ?? {};
+    if (cfg.pokerRevealed) return reply.code(409).send({ error: "revealed" }); // reset to re-estimate
+    if (!(cfg.deck ?? POKER_DECK).includes(body.data.card)) return reply.code(400).send({ error: "bad_card" });
+    await db
+      .insert(pokerVotes)
+      .values({ activityId: ctx.activity.id, voterId: req.currentUser!.id, card: body.data.card })
+      .onConflictDoUpdate({ target: [pokerVotes.activityId, pokerVotes.voterId], set: { card: body.data.card } });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Planning Poker: host reveals all cards, or resets (clears votes + hides) for a re-estimate.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/poker/reveal", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ reset: z.boolean().optional() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await hostActivity(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "POKER") return reply.code(403).send({ error: "not_allowed" });
+    if (body.data.reset) {
+      await db.delete(pokerVotes).where(eq(pokerVotes.activityId, ctx.activity.id));
+      await db.update(activities).set({ config: { ...ctx.activity.config, pokerRevealed: false } }).where(eq(activities.id, ctx.activity.id));
+    } else {
+      await db.update(activities).set({ config: { ...ctx.activity.config, pokerRevealed: true } }).where(eq(activities.id, ctx.activity.id));
+    }
+    await notify(ctx.activity.sessionId);
+    return { ok: true };
+  });
+
+  // Fist of Five: cast (or change) your 1–5 confidence vote (anyone in the room).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/fist/vote", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ value: z.number().int().min(1).max(5) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "FIST") return reply.code(403).send({ error: "not_in_room" });
+    await db
+      .insert(fistVotes)
+      .values({ activityId: ctx.activity.id, voterId: req.currentUser!.id, value: body.data.value })
+      .onConflictDoUpdate({ target: [fistVotes.activityId, fistVotes.voterId], set: { value: body.data.value } });
     await notify(ctx.sessionId);
     return { ok: true };
   });
@@ -685,6 +832,16 @@ type ActivityInput = NonNullable<z.infer<typeof startBody>["config"]>;
 // Build an activity's stored config from the raw inputs. Time-relative fields (deadlines) are
 // computed from "now", so calling this at launch (not draft creation) gives correct timers.
 // Returns { error } for validation failures (missing players/options).
+// Validate the two pinned players exist and are in the room (host counts). Shared by RPS + board games.
+async function twoPlayersInRoom(c: ActivityInput, session: { id: string; hostId: string }): Promise<{ error: string } | { player1Id: string; player2Id: string }> {
+  if (!c.player1Id || !c.player2Id || c.player1Id === c.player2Id) return { error: "need_two_players" };
+  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED")));
+  const set = new Set(joined.map((j) => j.userId));
+  set.add(session.hostId);
+  if (!set.has(c.player1Id) || !set.has(c.player2Id)) return { error: "players_not_in_room" };
+  return { player1Id: c.player1Id, player2Id: c.player2Id };
+}
+
 async function buildActivityConfig(
   type: string,
   c: ActivityInput,
@@ -693,12 +850,15 @@ async function buildActivityConfig(
   if (type === "RANDOMIZER") return { config: { removeAfterPick: c.removeAfterPick !== false, includeHost: c.includeHost === true } };
   if (type === "NOMINATION") return { config: { anonymous: c.anonymous !== false, showCounts: c.showCounts !== false, timerSeconds: c.timerSeconds } };
   if (type === "RPS") {
-    if (!c.player1Id || !c.player2Id || c.player1Id === c.player2Id) return { error: "need_two_players" };
-    const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED")));
-    const set = new Set(joined.map((j) => j.userId));
-    set.add(session.hostId);
-    if (!set.has(c.player1Id) || !set.has(c.player2Id)) return { error: "players_not_in_room" };
-    return { config: { bestOf: c.bestOf ?? 3, agreementKind: c.agreementKind ?? "LOSER", agreementText: c.agreementText ?? "", player1Id: c.player1Id, player2Id: c.player2Id } };
+    const players = await twoPlayersInRoom(c, session);
+    if ("error" in players) return players;
+    return { config: { bestOf: c.bestOf ?? 3, agreementKind: c.agreementKind ?? "LOSER", agreementText: c.agreementText ?? "", ...players } };
+  }
+  if (isBoardGame(type)) {
+    const players = await twoPlayersInRoom(c, session);
+    if ("error" in players) return players;
+    // Initial board lives right in config — server-authoritative, no extra table.
+    return { config: { agreementKind: c.agreementKind ?? "LOSER", agreementText: c.agreementText ?? "", ...players, ...initBoard(type) } };
   }
   if (type === "TASKS" || type === "TASK_REVIEW") {
     let listNodeId = session.scopeKind === "NODE" ? session.scopeId : null;
@@ -713,6 +873,13 @@ async function buildActivityConfig(
     return { config: { timerSeconds: secs, triviaPhase: "COLLECTING", triviaDeadline: secs ? new Date(Date.now() + secs * 1000).toISOString() : undefined } };
   }
   if (type === "WORDCLOUD") return { config: { maxPerPerson: c.maxPerPerson ?? 3 } };
+  if (type === "QNA") return { config: { anonymous: c.anonymous === true } };
+  if (type === "DOT_VOTE") {
+    if (!c.dotOptions || c.dotOptions.length < 2) return { error: "poll_needs_options" };
+    return { config: { dotOptions: c.dotOptions, dotBudget: c.dotBudget ?? 5 } };
+  }
+  if (type === "FIST") return { config: {} };
+  if (type === "POKER") return { config: { deck: POKER_DECK, pokerRevealed: false } };
   if (type === "DRAW_STRAWS") return { config: {} };
   if (type === "TEAM_SELECT") return { config: { teamCount: c.teamCount ?? 2 } };
   if (type === "SURVEY") {

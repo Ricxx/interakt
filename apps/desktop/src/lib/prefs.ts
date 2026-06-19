@@ -3,6 +3,14 @@ import { useEffect, useState } from "react";
 // Client-only preferences (theme + notification sound), persisted in localStorage.
 const THEME_KEY = "ces-theme";
 const SOUND_KEY = "ces-sound";
+const RECOG_KEY = "ces-recognition-notify";
+
+// Per-person toggle for the "you were recognised" badge. Default on; off hides the badge entirely.
+export function useRecognitionNotify() {
+  const [on, setOn] = useState(() => localStorage.getItem(RECOG_KEY) !== "off");
+  useEffect(() => { localStorage.setItem(RECOG_KEY, on ? "on" : "off"); }, [on]);
+  return { on, toggle: () => setOn((v) => !v) };
+}
 
 // Apply the saved theme before React renders, so there's no light→dark flash.
 export function initTheme() {

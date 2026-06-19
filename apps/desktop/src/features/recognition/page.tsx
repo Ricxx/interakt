@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMe } from "../../lib/auth";
 import { useTaskPeople, timeAgo } from "../../lib/tasks";
 import {
   type GiveInput, type Recognition, BADGES, badgeOf,
-  useDeleteRecognition, useGiveRecognition, useGroupsList, useOrgNodes, useRecognitionBoard, useRecognitionRecipients, useRecognitionWall, useToggleLike,
+  useAddComment, useDeleteComment, useDeleteRecognition, useGiveRecognition, useGroupsList, useMarkRecognitionRead, useOrgNodes, useRecognitionBoard, useRecognitionComments, useRecognitionRecipients, useRecognitionWall, useToggleLike,
 } from "../../lib/recognition";
+import { useOpenProfile } from "../profile/overlay";
 import { PageHeader } from "../../ui/page-header";
 import { Card } from "../../ui/card";
 import { Button } from "../../ui/button";
@@ -14,6 +15,9 @@ type RecipType = "USER" | "NODE" | "GROUP";
 export function RecognitionPage() {
   const [tab, setTab] = useState<"recent" | "past">("recent");
   const wall = useRecognitionWall(tab);
+  const markRead = useMarkRecognitionRead();
+  // Opening the page clears the "you were recognised" badge.
+  useEffect(() => { markRead.mutate(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="max-w-3xl">
@@ -34,7 +38,7 @@ export function RecognitionPage() {
       ) : wall.data.items.length === 0 ? (
         <Card><p className="text-sm text-muted">{tab === "recent" ? "No big-ups yet — be the first to recognise someone above." : "Nothing older than 30 days."}</p></Card>
       ) : (
-        <div className="space-y-2">{wall.data.items.map((r) => <RecognitionCard key={r.id} r={r} />)}</div>
+        <div className="space-y-2">{wall.data.items.map((r) => <RecognitionCard key={r.id} r={r} canAnon={wall.data!.canAnon} />)}</div>
       )}
     </div>
   );
@@ -137,10 +141,12 @@ function Leaderboard() {
   );
 }
 
-function RecognitionCard({ r }: { r: Recognition }) {
+function RecognitionCard({ r, canAnon }: { r: Recognition; canAnon: boolean }) {
   const del = useDeleteRecognition();
   const like = useToggleLike();
+  const openProfile = useOpenProfile();
   const [showMembers, setShowMembers] = useState(false);
+  const [showComments, setShowComments] = useState(false);
   const members = useRecognitionRecipients(r.id, showMembers && r.isGroupRecipient);
   const b = badgeOf(r.badge);
   const award = r.kind === "AWARD";
@@ -150,12 +156,12 @@ function RecognitionCard({ r }: { r: Recognition }) {
       <div className="text-2xl" title={b.label}>{award ? "🏆" : b.emoji}</div>
       <div className="min-w-0 flex-1">
         <div className="text-sm">
-          <span className="font-semibold text-fg">{r.fromName}</span>
+          <button onClick={() => openProfile(r.fromId)} className="font-semibold text-fg hover:underline">{r.fromName}</button>
           <span className="text-muted"> recognised </span>
           {r.isGroupRecipient ? (
             <button onClick={() => setShowMembers((s) => !s)} className="font-semibold text-primary hover:underline">{r.recipientName} 👥</button>
           ) : (
-            <span className="font-semibold text-fg">{r.recipientName}</span>
+            <button onClick={() => r.recipientUserId && openProfile(r.recipientUserId)} className="font-semibold text-fg hover:underline">{r.recipientName}</button>
           )}
         </div>
         {!r.isGroupRecipient && subtitle && <div className="text-xs text-muted">{subtitle}</div>}
@@ -167,14 +173,56 @@ function RecognitionCard({ r }: { r: Recognition }) {
         {showMembers && r.isGroupRecipient && (
           <div className="mt-1 text-xs text-muted">{!members.data ? "Loading members…" : members.data.people.length === 0 ? "No members." : members.data.people.map((p) => p.name).join(", ")}</div>
         )}
-        <button onClick={() => like.mutate(r.id)} disabled={like.isPending} className={`mt-2 inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${r.likedByMe ? "border-amber-300 bg-amber-50 text-amber-700" : "border-border text-muted hover:bg-border/40"}`} title="Show support">
-          <span>{r.likedByMe ? "⭐" : "☆"}</span>{r.likes > 0 && <span className="font-medium">{r.likes}</span>}
-        </button>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button onClick={() => like.mutate({ id: r.id, anonymous: false })} disabled={like.isPending} className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${r.myKudos === "PUBLIC" ? "border-amber-300 bg-amber-50 text-amber-700" : "border-border text-muted hover:bg-border/40"}`} title="Give kudos">
+            <span className="text-amber-400">{r.myKudos === "PUBLIC" ? "★" : "☆"}</span> Kudos
+          </button>
+          {canAnon && (
+            <button onClick={() => like.mutate({ id: r.id, anonymous: true })} disabled={like.isPending} className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs ${r.myKudos === "ANON" ? "border-amber-300 bg-amber-50 text-amber-700" : "border-border text-muted hover:bg-border/40"}`} title="Give kudos anonymously">
+            <span className="text-amber-400">{r.myKudos === "ANON" ? "★" : "☆"}</span> 🕶 Anon
+          </button>
+          )}
+          {/* Medal row — one gold star per kudos-giver; hover a star to see who (or "Anonymous"). */}
+          {r.kudos.length > 0 && (
+            <div className="flex items-center gap-0.5">
+              {r.kudos.map((k, i) => <span key={i} title={k.name} className="cursor-default text-base leading-none text-amber-400">★</span>)}
+            </div>
+          )}
+          <button onClick={() => setShowComments((s) => !s)} className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-xs text-muted hover:bg-border/40">
+            💬 {r.commentCount > 0 ? r.commentCount : "Comment"}
+          </button>
+        </div>
+        {showComments && <Comments id={r.id} />}
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
         <span className="text-xs text-muted">{timeAgo(r.createdAt)}</span>
         {r.canDelete && <button onClick={() => del.mutate(r.id)} className="text-xs text-muted hover:text-red-600" title="Remove">✕</button>}
       </div>
     </Card>
+  );
+}
+
+function Comments({ id }: { id: string }) {
+  const { data } = useRecognitionComments(id, true);
+  const add = useAddComment();
+  const del = useDeleteComment();
+  const [text, setText] = useState("");
+  const post = () => text.trim() && add.mutate({ id, body: text.trim() }, { onSuccess: () => setText("") });
+  return (
+    <div className="mt-2 space-y-2 border-t border-border pt-2">
+      {data?.comments.map((c) => (
+        <div key={c.id} className="flex items-start gap-2 text-sm">
+          <div className="min-w-0 flex-1">
+            <span className="font-medium text-fg">{c.authorName}</span> <span className="text-xs text-muted">{timeAgo(c.createdAt)}</span>
+            <p className="whitespace-pre-wrap text-fg">{c.body}</p>
+          </div>
+          {c.canDelete && <button onClick={() => del.mutate({ commentId: c.id, recognitionId: id })} className="shrink-0 text-xs text-muted hover:text-red-600">✕</button>}
+        </div>
+      ))}
+      <div className="flex gap-2">
+        <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && post()} placeholder="Add a comment…" maxLength={500} className="flex-1 rounded-lg border border-border bg-surface px-2 py-1 text-sm" />
+        <button onClick={post} disabled={!text.trim() || add.isPending} className="text-xs text-primary hover:underline disabled:opacity-50">Post</button>
+      </div>
+    </div>
   );
 }

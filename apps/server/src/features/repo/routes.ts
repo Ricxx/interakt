@@ -114,10 +114,12 @@ export function repoRoutes(app: FastifyInstance) {
 
   // Decide the status for a new/edited item under our safety rules.
   async function decideStatus(me: { id: string; tenantId: string; role: string }, nodeId: string, kind: string, host: string | null): Promise<"PENDING" | "APPROVED"> {
-    const [node] = await db.select({ nodeType: orgNodes.nodeType }).from(orgNodes).where(eq(orgNodes.id, nodeId));
+    const [node] = await db.select({ path: orgNodes.path }).from(orgNodes).where(eq(orgNodes.id, nodeId));
     const wl = (await db.select({ d: repoDomains.domain }).from(repoDomains).where(eq(repoDomains.tenantId, me.tenantId))).map((r) => r.d);
     const trusted = await canApprove(me, nodeId);
-    const wide = node?.nodeType === "ORG" || node?.nodeType === "DIVISION";
+    // "Wide" = a high/broad node (org root or a top-level branch), judged by tree depth not a label —
+    // so it holds for any org structure. Posting wide while untrusted needs approval.
+    const wide = node ? node.path.split(".").length <= 2 : true;
     const riskyLink = kind === "LINK" && !isWhitelisted(host, wl);
     return !trusted && (wide || riskyLink) ? "PENDING" : "APPROVED";
   }

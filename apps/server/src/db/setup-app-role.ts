@@ -10,7 +10,7 @@ import { env } from "../env.js";
 // mutations from any role; this stops the app's role from even being granted the right.
 
 // Tables that are append-only (CLAUDE.md). Add new ones here AND give them a trigger.
-const APPEND_ONLY = ["audit_log"];
+const APPEND_ONLY = ["audit_log", "event_contributions", "points_ledger"];
 
 async function main() {
   if (!process.env.APP_DATABASE_URL) {

@@ -14,19 +14,28 @@ export const badgeOf = (key: string) => BADGES.find((b) => b.key === key) ?? { k
 
 export type Recognition = {
   id: string; kind: "BIGUP" | "AWARD"; badge: string; message: string; createdAt: string;
-  fromName: string; recipientType: "USER" | "NODE" | "GROUP"; recipientName: string; isGroupRecipient: boolean;
+  fromName: string; fromId: string; recipientType: "USER" | "NODE" | "GROUP"; recipientName: string; recipientUserId: string | null; isGroupRecipient: boolean;
   recipientTitle: string | null; recipientDept: string | null;
-  scope: string; canDelete: boolean; likes: number; likedByMe: boolean;
+  scope: string; canDelete: boolean; kudos: { name: string }[]; myKudos: "PUBLIC" | "ANON" | null; commentCount: number;
 };
+export type RecognitionComment = { id: string; body: string; createdAt: string; authorId: string; authorName: string; canDelete: boolean };
 export type Board = { windowDays: number; people: { name: string; dept: string | null; count: number }[]; departments: { name: string; count: number }[] };
 
 export type GiveInput = { recipientType: "USER" | "NODE" | "GROUP"; recipientId: string; badge: string; message: string; kind?: "BIGUP" | "AWARD"; scopeKind?: "ALL" };
 
 export function useRecognitionWall(filter: "recent" | "past") {
-  return useQuery({ queryKey: ["recognitions", filter], queryFn: () => api<{ items: Recognition[] }>(`/api/recognitions?filter=${filter}`) });
+  return useQuery({ queryKey: ["recognitions", filter], queryFn: () => api<{ items: Recognition[]; canAnon: boolean }>(`/api/recognitions?filter=${filter}`) });
 }
 export function useRecognitionBoard() {
   return useQuery({ queryKey: ["recognitions-board"], queryFn: () => api<Board>("/api/recognitions/board") });
+}
+// Unread badge — polled (no WS message type needed for a low-frequency "you got recognized" nudge).
+export function useRecognitionUnread(enabled: boolean) {
+  return useQuery({ queryKey: ["recognitions-unread"], queryFn: () => api<{ count: number }>("/api/recognitions/unread"), enabled, refetchInterval: 45_000 });
+}
+export function useMarkRecognitionRead() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: () => api("/api/recognitions/read", { method: "POST" }), onSuccess: () => qc.invalidateQueries({ queryKey: ["recognitions-unread"] }) });
 }
 export function useRecognitionRecipients(id: string, enabled: boolean) {
   return useQuery({ queryKey: ["recognition-recipients", id], queryFn: () => api<{ people: { id: string; name: string }[] }>(`/api/recognitions/${id}/recipients`), enabled });
@@ -48,8 +57,25 @@ export function useDeleteRecognition() {
 export function useToggleLike() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api<{ liked: boolean; likes: number }>(`/api/recognitions/${id}/like`, { method: "POST" }),
+    mutationFn: (v: { id: string; anonymous: boolean }) => api<{ myKudos: "PUBLIC" | "ANON" | null; likes: number }>(`/api/recognitions/${v.id}/like`, { method: "POST", body: JSON.stringify({ anonymous: v.anonymous }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["recognitions"] }),
+  });
+}
+export function useRecognitionComments(id: string, enabled: boolean) {
+  return useQuery({ queryKey: ["recognition-comments", id], queryFn: () => api<{ comments: RecognitionComment[] }>(`/api/recognitions/${id}/comments`), enabled });
+}
+export function useAddComment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; body: string }) => api(`/api/recognitions/${v.id}/comments`, { method: "POST", body: JSON.stringify({ body: v.body }) }),
+    onSuccess: (_d, v) => { qc.invalidateQueries({ queryKey: ["recognition-comments", v.id] }); qc.invalidateQueries({ queryKey: ["recognitions"] }); },
+  });
+}
+export function useDeleteComment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { commentId: string; recognitionId: string }) => api(`/api/recognitions/comments/${v.commentId}`, { method: "DELETE" }),
+    onSuccess: (_d, v) => { qc.invalidateQueries({ queryKey: ["recognition-comments", v.recognitionId] }); qc.invalidateQueries({ queryKey: ["recognitions"] }); },
   });
 }
 

@@ -3,12 +3,17 @@ import { type AgendaItem, type CurrentActivity, useActivityAction, useDiscardDra
 import { NominationView } from "./nomination";
 import { BrainstormView } from "./brainstorm";
 import { RpsView } from "./rps";
+import { BoardGameView } from "./boardgame";
 import { TasksView } from "./tasks";
 import { TaskReviewView } from "./task-review";
 import { TriviaView } from "./trivia";
 // Lazy — keeps ECharts out of the main bundle until a poll is actually shown.
 const PollView = lazy(() => import("./poll").then((m) => ({ default: m.PollView })));
 import { WordCloudView } from "./wordcloud";
+import { QnaView } from "./qna";
+import { DotVoteView } from "./dot-vote";
+import { FistOfFiveView } from "./fist-of-five";
+import { PokerView } from "./poker";
 import { DrawStrawsView } from "./draw-straws";
 import { TeamSelectView } from "./team-select";
 import { SurveyActivityView } from "./survey-activity";
@@ -28,9 +33,16 @@ export const CATALOG = [
   { type: "NOMINATION", name: "Nomination", icon: "🗳️", desc: "Everyone votes for who goes next." },
   { type: "BRAINSTORM", name: "Brainstorm", icon: "💡", desc: "Collect ideas on a subject — like, comment, sort." },
   { type: "RPS", name: "Rock Paper Scissors", icon: "✊", desc: "Settle it — two players, best of N." },
+  { type: "TIC_TAC_TOE", name: "Tic-Tac-Toe", icon: "⭕", desc: "Two players — classic 3×3." },
+  { type: "CONNECT_FOUR", name: "Connect Four", icon: "🔴", desc: "Two players — drop discs, connect four." },
+  { type: "CHECKERS", name: "Checkers", icon: "🏁", desc: "Two players — capture all the pieces." },
   { type: "TASK_REVIEW", name: "Task Review", icon: "✅", desc: "Spotlight a task for the room; add/track subtasks live." },
   { type: "TRIVIA", name: "Team Trivia", icon: "🧠", desc: "Everyone submits a fact/question; guess about a teammate." },
+  { type: "QNA", name: "Q&A Queue", icon: "💬", desc: "Audience asks questions, upvotes them; host marks answered." },
   { type: "POLL", name: "Live Poll", icon: "📊", desc: "Poll the room with live charts; anonymity + CSV export." },
+  { type: "DOT_VOTE", name: "Dot Voting", icon: "🔵", desc: "Prioritize: everyone spends a budget of dots across options." },
+  { type: "FIST", name: "Fist of Five", icon: "✋", desc: "Quick 1–5 confidence check; live average + spread." },
+  { type: "POKER", name: "Planning Poker", icon: "🃏", desc: "Estimate together — pick cards hidden, reveal at once." },
   { type: "WORDCLOUD", name: "Word Cloud", icon: "☁️", desc: "Everyone submits words; they grow by how often they're said." },
   { type: "DRAW_STRAWS", name: "Draw Straws", icon: "🥢", desc: "Everyone draws a straw; shortest is picked. Ranked live." },
   { type: "TEAM_SELECT", name: "Team Selector", icon: "👥", desc: "Split the room into teams — random, then nudge as needed." },
@@ -58,6 +70,8 @@ export function ActivityPanel({ sessionId, canControl, activity, joined, rpsPlay
         <BrainstormView sessionId={sessionId} canControl={canControl} activity={activity} />
       ) : activity.type === "RPS" ? (
         <RpsView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "TIC_TAC_TOE" || activity.type === "CONNECT_FOUR" || activity.type === "CHECKERS" ? (
+        <BoardGameView sessionId={sessionId} activity={activity} />
       ) : activity.type === "TASKS" ? (
         <TasksView sessionId={sessionId} canControl={canControl} activity={activity} joined={joined} />
       ) : activity.type === "TASK_REVIEW" ? (
@@ -68,6 +82,14 @@ export function ActivityPanel({ sessionId, canControl, activity, joined, rpsPlay
         <Suspense fallback={<Card><p className="text-sm text-muted">Loading chart…</p></Card>}><PollView sessionId={sessionId} canControl={canControl} activity={activity} /></Suspense>
       ) : activity.type === "WORDCLOUD" ? (
         <WordCloudView sessionId={sessionId} activity={activity} />
+      ) : activity.type === "QNA" ? (
+        <QnaView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "DOT_VOTE" ? (
+        <DotVoteView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "FIST" ? (
+        <FistOfFiveView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "POKER" ? (
+        <PokerView sessionId={sessionId} canControl={canControl} activity={activity} />
       ) : activity.type === "DRAW_STRAWS" ? (
         <DrawStrawsView sessionId={sessionId} activity={activity} />
       ) : activity.type === "TEAM_SELECT" ? (
@@ -86,6 +108,7 @@ export function ActivityPanel({ sessionId, canControl, activity, joined, rpsPlay
 }
 
 const ICON = Object.fromEntries(CATALOG.map((c) => [c.type, c.icon]));
+const BOARD_GAMES = ["TIC_TAC_TOE", "CONNECT_FOUR", "CHECKERS"]; // 1v1 like RPS: pick two players, no drafts
 
 // "HH:MM" today → ISO. If the time has already passed today, it's effectively "launch now".
 function timeToIso(hhmm: string): string | null {
@@ -174,6 +197,9 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
   const [pollClose, setPollClose] = useState(""); // seconds, "" = no auto-close
   const [pollQuestion, setPollQuestion] = useState("");
   const [teamCount, setTeamCount] = useState(2);
+  const [qnaAnon, setQnaAnon] = useState(false);
+  const [dotOptions, setDotOptions] = useState<string[]>(["", ""]);
+  const [dotBudget, setDotBudget] = useState(5);
   const [surveyId, setSurveyId] = useState("");
   const { data: surveyData } = useSurveys();
   const mySurveys = surveyData?.surveys ?? [];
@@ -191,18 +217,24 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
           ? { anonymous: !named, timerSeconds: timer ? Number(timer) : undefined }
           : type === "RPS"
             ? { bestOf, agreementKind: agrKind, agreementText: agrText.trim() || undefined, player1Id: p1, player2Id: p2 }
+            : BOARD_GAMES.includes(type)
+            ? { agreementKind: agrKind, agreementText: agrText.trim() || undefined, player1Id: p1, player2Id: p2 }
             : type === "TRIVIA"
               ? { timerSeconds: triviaTimer ? Number(triviaTimer) : undefined }
               : type === "POLL"
                 ? { pollOptions: pollOptions.map((o) => o.trim()).filter(Boolean), anonymity: pollAnon, resultsVisibility: pollVis, chartType: pollChart, closeSeconds: pollClose ? Number(pollClose) : undefined }
+                : type === "QNA"
+                  ? { anonymous: qnaAnon }
+                : type === "DOT_VOTE"
+                  ? { dotOptions: dotOptions.map((o) => o.trim()).filter(Boolean), dotBudget }
                 : type === "TEAM_SELECT"
                   ? { teamCount }
                   : type === "SURVEY"
                     ? { surveyId }
                     : type === "QUIZ"
                       ? { quizId }
-                      : type === "WORDCLOUD" || type === "DRAW_STRAWS"
-                        ? {} // word cloud prompt = title; draw straws needs no config
+                      : type === "WORDCLOUD" || type === "DRAW_STRAWS" || type === "FIST" || type === "POKER"
+                        ? {} // word cloud prompt = title; draw straws / fist / poker need no config
                         : { description: desc.trim() || undefined }; // BRAINSTORM
     start.mutate({ type, title: t, config, draft, agendaItemId: draft && draftAgenda ? draftAgenda : undefined }, { onSuccess: () => { setOpen(false); setTitle(""); setDesc(""); setP1(""); setP2(""); setAgrText(""); setPollQuestion(""); setDraftAgenda(""); } });
   }
@@ -219,6 +251,7 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
   }
 
   const pollIncomplete = !pollQuestion.trim() || pollOptions.filter((o) => o.trim()).length < 2;
+  const dotIncomplete = dotOptions.filter((o) => o.trim()).length < 2;
 
   return (
     <Card className="mt-4">
@@ -328,6 +361,35 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
               {c.type === "WORDCLOUD" && (
                 <div className="mt-1 text-xs text-muted">The title above is the prompt (e.g. “One word for this quarter”).</div>
               )}
+              {c.type === "FIST" && (
+                <div className="mt-1 text-xs text-muted">The title is the question (e.g. “How confident are we in this plan?”). 1 = not at all, 5 = fully.</div>
+              )}
+              {c.type === "POKER" && (
+                <div className="mt-1 text-xs text-muted">The title is what you're estimating (e.g. “Story: search filters”). Cards: 1, 2, 3, 5, 8, 13, 21, ?.</div>
+              )}
+              {c.type === "QNA" && (
+                <label className="mt-1 flex items-center gap-1 text-xs text-muted">
+                  <input type="checkbox" checked={qnaAnon} onChange={(e) => setQnaAnon(e.target.checked)} />
+                  anonymous (hide who asked)
+                </label>
+              )}
+              {c.type === "DOT_VOTE" && (
+                <div className="mt-1 space-y-1 text-xs text-muted">
+                  {dotOptions.map((o, i) => (
+                    <div key={i} className="flex items-center gap-1">
+                      <Input placeholder={`Option ${i + 1}`} value={o} onChange={(e) => setDotOptions(dotOptions.map((x, j) => (j === i ? e.target.value : x)))} className="flex-1" />
+                      {dotOptions.length > 2 && <button onClick={() => setDotOptions(dotOptions.filter((_, j) => j !== i))} className="text-muted hover:text-red-600">×</button>}
+                    </div>
+                  ))}
+                  {dotOptions.length < 12 && <button onClick={() => setDotOptions([...dotOptions, ""])} className="text-primary hover:underline">+ add option</button>}
+                  <label className="flex items-center gap-1 pt-1">
+                    dots each person gets
+                    <select value={dotBudget} onChange={(e) => setDotBudget(Number(e.target.value))} className="rounded border border-border bg-surface px-1 py-0.5">
+                      {[3, 5, 7, 10].map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </label>
+                </div>
+              )}
               {c.type === "TEAM_SELECT" && (
                 <label className="mt-1 flex items-center gap-2 text-xs text-muted">
                   Number of teams
@@ -380,12 +442,24 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
                   </div>
                 </div>
               )}
+              {BOARD_GAMES.includes(c.type) && (
+                <div className="mt-1 flex gap-1 text-xs text-muted">
+                  <select value={p1} onChange={(e) => setP1(e.target.value)} className="flex-1 rounded border border-border bg-surface px-1 py-0.5">
+                    <option value="">Player 1…</option>
+                    {rpsPlayers.map((j) => <option key={j.userId} value={j.userId}>{j.name}</option>)}
+                  </select>
+                  <select value={p2} onChange={(e) => setP2(e.target.value)} className="flex-1 rounded border border-border bg-surface px-1 py-0.5">
+                    <option value="">Player 2…</option>
+                    {rpsPlayers.filter((j) => j.userId !== p1).map((j) => <option key={j.userId} value={j.userId}>{j.name}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
             <div className="flex flex-col gap-1">
-              <Button onClick={() => add(c.type, c.name)} disabled={start.isPending || (c.type === "RPS" && (!p1 || !p2)) || (c.type === "POLL" && pollIncomplete) || (c.type === "SURVEY" && !surveyId) || (c.type === "QUIZ" && !quizId)}>Start</Button>
-              {/* RPS can't be pre-planned (it needs players live in the room). */}
-              {allowedTypes === null && c.type !== "RPS" && (
-                <button onClick={() => add(c.type, c.name, true)} disabled={start.isPending || (c.type === "POLL" && pollIncomplete) || (c.type === "SURVEY" && !surveyId) || (c.type === "QUIZ" && !quizId)} className="text-xs text-muted hover:text-fg disabled:opacity-40">Save as draft</button>
+              <Button onClick={() => add(c.type, c.name)} disabled={start.isPending || ((c.type === "RPS" || BOARD_GAMES.includes(c.type)) && (!p1 || !p2)) || (c.type === "POLL" && pollIncomplete) || (c.type === "DOT_VOTE" && dotIncomplete) || (c.type === "SURVEY" && !surveyId) || (c.type === "QUIZ" && !quizId)}>Start</Button>
+              {/* RPS + board games can't be pre-planned (they need players live in the room). */}
+              {allowedTypes === null && c.type !== "RPS" && !BOARD_GAMES.includes(c.type) && (
+                <button onClick={() => add(c.type, c.name, true)} disabled={start.isPending || (c.type === "POLL" && pollIncomplete) || (c.type === "DOT_VOTE" && dotIncomplete) || (c.type === "SURVEY" && !surveyId) || (c.type === "QUIZ" && !quizId)} className="text-xs text-muted hover:text-fg disabled:opacity-40">Save as draft</button>
               )}
             </div>
           </div>

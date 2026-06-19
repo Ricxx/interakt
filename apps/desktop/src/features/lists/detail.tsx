@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAddComment, useAddItem, useItemComments, useList, useToggleClose, useToggleItem, type ListEvent, type ListItem } from "../../lib/lists";
+import { AddToCalendar } from "../calendar/add-to-calendar";
 import { PageHeader } from "../../ui/page-header";
 import { Card } from "../../ui/card";
 import { Button } from "../../ui/button";
@@ -89,6 +90,7 @@ export function ListDetailPage() {
       <div className="flex items-start justify-between">
         <PageHeader title={list.title} subtitle={`${list.scope} · ${items.filter((i) => i.done).length}/${items.length} done${list.recurrence !== "NONE" ? ` · ${list.recurrence.toLowerCase()}` : ""}${closed ? " · closed" : ""}`} />
         <div className="flex shrink-0 items-center gap-2">
+          <AddToCalendar defaultTitle={list.title} listId={list.id} />
           <Button variant="ghost" onClick={() => { navigator.clipboard?.writeText(`${location.origin}/lists/${list.id}`); setCopied(true); }} title="Copy a link to paste into chat or a comment">
             {copied ? "Copied" : "Copy link"}
           </Button>

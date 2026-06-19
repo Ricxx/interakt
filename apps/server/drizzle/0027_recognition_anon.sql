@@ -1,0 +1,1 @@
+ALTER TABLE "recognition_likes" ADD COLUMN "anonymous" boolean DEFAULT false NOT NULL;

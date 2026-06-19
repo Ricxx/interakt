@@ -24,17 +24,24 @@ export const CAPABILITIES = [
   { key: "survey.create", category: "Surveys", label: "Create surveys", scoped: false },
   { key: "survey.distribute", category: "Surveys", label: "Distribute surveys (reach sets how wide)", scoped: true },
   { key: "recognition.award", category: "Recognition", label: "Issue official awards (dept/team/org-wide)", scoped: true },
+  { key: "recognition.anonymous", category: "Recognition", label: "Give kudos anonymously", scoped: false },
+  { key: "event.manage", category: "Events", label: "Run org-wide events & theme days", scoped: true },
+  { key: "tournament.manage", category: "Events", label: "Run org-wide tournaments", scoped: true },
+  { key: "reward.manage", category: "Events", label: "Set daily check-in rewards", scoped: false },
+  { key: "usage.view", category: "Governance", label: "View the team usage log", scoped: true },
   { key: "member.approve", category: "Governance", label: "Approve members & requests", scoped: false },
   { key: "permission.grant", category: "Governance", label: "Manage permission groups", scoped: false },
 ] as const;
 
-export const CAPABILITY_CATEGORIES = ["Sessions", "Tasks", "Repository", "Boards", "Lists", "Surveys", "Recognition", "Governance"] as const;
+export const CAPABILITY_CATEGORIES = ["Sessions", "Tasks", "Repository", "Boards", "Lists", "Surveys", "Recognition", "Events", "Governance"] as const;
 
-export const SCOPES = ["SELF", "DEPT", "DIVISION", "ORG"] as const;
+// Reach is RELATIVE to where the user sits in the org tree — structure-agnostic, so it works for any
+// company shape/naming. SELF = no authority over org nodes; NODE = the subtree rooted at the user's
+// home node (covers everything beneath them, whatever the levels are called); ORG = the whole tenant.
+export const SCOPES = ["SELF", "NODE", "ORG"] as const;
 type Scope = (typeof SCOPES)[number];
-const RANK: Record<Scope, number> = { SELF: 0, DEPT: 1, DIVISION: 2, ORG: 3 };
+const RANK: Record<Scope, number> = { SELF: 0, NODE: 1, ORG: 2 };
 const SCOPED = new Set<string>(CAPABILITIES.filter((c) => c.scoped).map((c) => c.key));
-const NODE_TYPE: Record<Exclude<Scope, "SELF" | "ORG">, string> = { DEPT: "DEPARTMENT", DIVISION: "DIVISION" };
 
 // Is this user assigned to any permission group? If not, they're "ungoverned" and enforcement
 // points fall back to legacy behavior — so turning groups on never silently locks existing users out.
@@ -75,35 +82,21 @@ async function userCaps(userId: string): Promise<Map<string, Scope | null>> {
   return m;
 }
 
-// The org node that a scope level resolves to, relative to the user's node (the root of their reach).
-async function scopeRoot(tenantId: string, myNodeId: string, level: Scope): Promise<string | null> {
-  if (level === "SELF") return myNodeId;
-  const nodes = await db.select({ id: orgNodes.id, parentId: orgNodes.parentId, nodeType: orgNodes.nodeType }).from(orgNodes).where(eq(orgNodes.tenantId, tenantId));
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  let cur = byId.get(myNodeId) ?? null;
-  let last = cur;
-  let guard = 0;
-  while (cur && guard++ < 30) {
-    if (level === "ORG" && !cur.parentId) return cur.id; // topmost ancestor
-    if (level !== "ORG" && cur.nodeType === NODE_TYPE[level]) return cur.id;
-    last = cur;
-    cur = cur.parentId ? byId.get(cur.parentId) ?? null : null;
-  }
-  return level === "ORG" ? last?.id ?? null : null; // ORG falls back to the topmost reached
-}
-
 // Can this user do `capability`, optionally at `targetNodeId`? Admins: always.
-// Boolean caps: held = allowed. Scoped caps: the target must sit within the subtree their level reaches.
+// Boolean caps: held = allowed. Scoped caps: ORG reaches anywhere; NODE reaches the user's own subtree
+// (their home node + all descendants); SELF grants no authority over org nodes.
 export async function can(user: { id: string; tenantId: string; role: string; nodeId?: string | null }, capability: string, targetNodeId?: string): Promise<boolean> {
   if (user.role === "TENANT_ADMIN") return true;
   const caps = await userCaps(user.id);
   if (!caps.has(capability)) return false;
   if (!SCOPED.has(capability) || !targetNodeId) return true;
+  const held = caps.get(capability) ?? "SELF";
+  if (held === "ORG") return true;
+  if (held === "SELF") return false;
   const myNode = user.nodeId ?? (await userNodeId(user.id));
   if (!myNode) return false;
-  const root = await scopeRoot(user.tenantId, myNode, caps.get(capability) ?? "SELF");
-  if (!root) return false;
-  return (await ancestorNodes(user.tenantId, targetNodeId)).has(root); // target is in root's subtree
+  // NODE reach: the target must sit within the subtree rooted at the user's home node.
+  return (await ancestorNodes(user.tenantId, targetNodeId)).has(myNode);
 }
 
 // Does the user hold `capability` at least at `level` reach? Used for non-node targets like

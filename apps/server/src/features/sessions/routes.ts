@@ -14,6 +14,10 @@ import { buildReviewPayload } from "../tasks/review.js";
 import { buildTriviaPayload, triviaReveal } from "../trivia/payload.js";
 import { buildPollPayload, pollResults } from "../poll/payload.js";
 import { buildWordcloudPayload, wordcloudResults } from "../wordcloud/payload.js";
+import { buildQnaPayload } from "../qna/payload.js";
+import { buildDotPayload } from "../dot/payload.js";
+import { buildFistPayload } from "../fist/payload.js";
+import { buildPokerPayload } from "../poker/payload.js";
 import { buildStrawsPayload, strawsResults } from "../straws/payload.js";
 import { buildTeamsPayload, teamsResults } from "../teams/payload.js";
 import { buildSurveyActivityPayload } from "../surveys/respond.js";
@@ -541,6 +545,22 @@ async function currentActivity(sessionId: string, meId: string, isHost: boolean,
     return { ...base, wordcloud: await buildWordcloudPayload(activity, meId) };
   }
 
+  if (activity.type === "QNA") {
+    return { ...base, qna: await buildQnaPayload(activity, meId, canControl) };
+  }
+
+  if (activity.type === "DOT_VOTE") {
+    return { ...base, dot: await buildDotPayload(activity, meId) };
+  }
+
+  if (activity.type === "FIST") {
+    return { ...base, fist: await buildFistPayload(activity, meId) };
+  }
+
+  if (activity.type === "POKER") {
+    return { ...base, poker: await buildPokerPayload(activity, meId) };
+  }
+
   if (activity.type === "DRAW_STRAWS") {
     return { ...base, straws: await buildStrawsPayload(activity.id, meId) };
   }
@@ -555,6 +575,29 @@ async function currentActivity(sessionId: string, meId: string, isHost: boolean,
 
   if (activity.type === "QUIZ") {
     return { ...base, quiz: await buildQuizPayload(activity, meId, canControl) };
+  }
+
+  if (activity.type === "TIC_TAC_TOE" || activity.type === "CONNECT_FOUR" || activity.type === "CHECKERS") {
+    const cfg = activity.config ?? {};
+    const slot = cfg.player1Id === meId ? 1 : cfg.player2Id === meId ? 2 : null;
+    const [p1] = cfg.player1Id ? await db.select({ name: users.displayName }).from(users).where(eq(users.id, cfg.player1Id)) : [];
+    const [p2] = cfg.player2Id ? await db.select({ name: users.displayName }).from(users).where(eq(users.id, cfg.player2Id)) : [];
+    return {
+      ...base,
+      board: {
+        game: activity.type,
+        player1: { name: p1?.name ?? "" },
+        player2: { name: p2?.name ?? "" },
+        myPlayer: slot,
+        cells: cfg.board ?? [],
+        turn: cfg.turn ?? 1,
+        winner: cfg.winner ?? null,
+        lastMove: cfg.lastMove ?? null,
+        mustJumpFrom: cfg.mustJumpFrom ?? null,
+        agreementKind: cfg.agreementKind ?? "LOSER",
+        agreementText: cfg.agreementText ?? "",
+      },
+    };
   }
 
   if (activity.type === "RPS") {

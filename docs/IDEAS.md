@@ -11,11 +11,18 @@ existing session → activity → realtime spine. Keep the doctrine: build when 
   rename it per org (e.g. "Kudos", "Shoutouts", "Thanks"). Feeds a recognition feed.
 - **Awards & trophies** — nominate/award; a trophy cabinet per person/team.
 
-## Personal dashboard + feed (its own slice)
-- Per-user stats: activities participated, points earned, awards earned.
-- "My awards" — see your trophies/badges; profile.
-- Opt-in **news feed**: staff can share their awards; departments can post their wins.
-  Doubles as a lightweight internal comms feed.
+## Personal dashboard ✅ BUILT (home screen) + Profile v1
+- Home: avatar + greeting + an **owner-editable status** (click → profile overlay edit); private "rough
+  stretch" wellness nudge; **only non-zero** attention tiles (no scary "0 X"); "Coming up" (sessions +
+  events, tenant-tz); "Big-ups & awards you've received"; recent task activity; a **"Try out"** feature-
+  discovery grid. Pure frontend composition — no new server routes for the dashboard itself.
+- **Profile v1 ✅**: `users.avatarUrl` (URL-based — real file upload waits on the MinIO slice) + `statusText`,
+  self-edited via `PATCH /api/profile/me`; shown in the profile overlay (self-edit there), dashboard, and
+  shell (reusable `ui/avatar.tsx` with initials fallback). **Institution toggle** `tenants.profilePicsEnabled`
+  (Settings): when off, avatars hide everywhere + can't be set (status still editable). `/auth/me` + the
+  CurrentUser now carry avatar/status. Verified 10/10.
+- Deliberately deferred (need their own data/foundations): **achievements** + **games-won** (gamification
+  ledger), **site-wide notices**, **board-post feed**, scheduled **wellness check-in reminders**.
 
 ## Notice boards & long-lived sessions
 - **Pin / notice boards** per department, division, org — pin items to a board to share
@@ -50,12 +57,18 @@ identity in tables, k-anonymity, careful logging). Nothing here is scheduled; pu
 small slice at a time per the doctrine.
 
 ## A. Live in-meeting activities (extend the existing activity engine)
+- **Meeting toolkit ✅ BUILT (Q&A queue + dot voting + fist-of-five).** Three new activity types on the
+  existing session engine (type enum + `buildActivityConfig` + submit endpoints + a `currentActivity()`
+  payload branch + a `features/sessions/*.tsx` view, all matching POLL):
+  - **Q&A queue** (`QNA`, migration 0047): ask → upvote (toggle) → host marks answered; open-first then
+    by-votes ordering; `anonymous` config hides asker names from everyone. Verified 13/13.
+  - **Dot voting** (`DOT_VOTE`, migration 0048): spend a budget of dots across options; server enforces
+    sum ≤ budget; live totals + leader. Verified 10/10.
+  - **Fist of Five** (`FIST`, migration 0049): one-tap 1–5 confidence check; live average + distribution;
+    re-vote replaces. Verified 9/9.
 - **Mini questions / fun facts / favorites** — snack, candy, music, movie, movie-type, etc.
   Icebreaker variant; bank of prompts; per-person answers shown. Low risk, high charm.
 - **Mentimeter-style + Word cloud** — open-text submissions, sized by frequency, live. (In IDEAS above.)
-- **Q&A** ⚠️ — submit questions in a meeting; others **upvote** the ones they want answered.
-  Asker **anonymous by default**, can opt to show name (confirm first). Q&A can be private;
-  expose only counts / question numbers/ids when private. Asked-count + ids usable as a digest.
 - **In-meeting quick surveys** — small, fast, single-screen pulse during a meeting.
 - **Guess the item/animal** (host-specified game) — host builds a custom word/category list;
   words dealt at random to N people (N = #words, even if more members). Each person sees
@@ -209,9 +222,215 @@ hard part (anonymous responses: pseudonym only, no identity, coarse day timestam
   - Visibility scope: **recipient's dept by default**, **org-wide** if the issuer holds the new
     `recognition.award` capability (no-lockout: ungoverned open, admins bypass; org-wide audited).
   - Wall split **Recent (≤30d) / Past**; board counts visible individuals only.
-- **R2b (next)**: recipient **notifications** + unread nav badge (reuse `*_reads` + hub.sendToUsers) +
-  a per-person on/off toggle in Settings (reuse the prefs.ts localStorage pattern).
-- R-next: react/+1; points ledger when gamification lands; recognition as an in-session activity.
+- **R-likes/profile** ✅ **Kudos** = a row of **gold ⭐ medals**, one per giver, hover shows their name;
+  **no notification**. **Anonymous kudos** ✅ opt-in, gated by the new boolean cap `recognition.anonymous`
+  (grant it to management groups so upper staff can support without conflict-of-interest optics; rest
+  must show). Anonymous givers render as "Anonymous" — their name AND user id never go over the wire.
+  Same-anonymity click toggles off; different switches public↔anon. Recipient cards show **job title +
+  department** under the name (jobTitle admin-set on Members). **Comments** ✅ on each recognition
+  (attributed, scope-gated; author/admin delete; count on the card, lazy-loaded thread).
+- **R2b ✅ BUILT — recipient notifications.** `recognition_reads` (per-user last-seen marker) →
+  `GET /api/recognitions/unread` counts recognitions addressed to YOU (you / your dept subtree / a team
+  you're on) since you last looked, excluding ones you gave. Unread **nav badge** on Recognition (polled
+  45s); opening the page marks read. **Per-person 🔔 toggle** in the shell footer (prefs.ts) hides it.
+  Kudos/comments never notify — only the recognition itself. Verified 8/8.
+- R-next: recognition as an in-session activity (shout-outs); pin a big-up to a board.
+
+### Profiles ✅ STARTED — clickable profile overlay
+- `ProfileProvider` + `useOpenProfile(userId)` → an overlay reachable from anywhere (shell name,
+  recognition card names). `GET /api/profile/:id` = identity (name/title/dept/role) + recognition
+  received (scope-filtered to the viewer) + star totals.
+- Shell user-block fixed: name/role is its own clickable row (opens your profile); mute/theme/
+  sign-out moved to a second row so they never crowd the name.
+- This overlay is the seam for Epic G below (awards/trinkets/achievements decorate the profile here).
+
+### Epic G — Gamification, achievements & loyalty
+- **Foundation ✅ BUILT — points ledger + daily streak/loyalty.** `points_ledger` (**append-only**: trigger +
+  ces_app REVOKE, like contributions) — balance = sum of deltas. `features/points/routes.ts`: `GET
+  /api/points/me` (balance, streak, checkedInToday, recent), `POST /api/points/checkin` (once/day; base 10
+  + streak bonus up to +14), `POST /api/points/leave` (flag a day leave/sick so it bridges a gap). Streak =
+  consecutive covered days (check-in or leave) ending today/yesterday. Dashboard check-in card (🔥 streak +
+  balance + claim + "on leave today"). Verified 8/8 incl. leave-bridge + append-only. Daily reset is UTC for now.
+- **Check-in calendar + rewards ✅ BUILT.** `checkin_rewards` (per-tenant per-day; kind POINTS|PRIZE|TITLE|
+  PROFILE + label + points; admin-editable). Monthly calendar (`GET /api/points/calendar`) shows your
+  check-in marks + each day's reward; admins set/clear rewards per day (`PUT/DELETE /points/rewards/:day`).
+  On check-in a POINTS reward is auto-credited; a non-POINTS reward (real-world/title/profile) is returned
+  as a "you won" prize (fulfillment is offline/derivable). **Public streak**: profiles now show `streak`
+  (shared `lib/streak.ts`). Nav "Check-in" + dashboard card links to it. Verified 11/11.
+- **Achievements ✅ BUILT.** `achievements` (admin-defined: name/desc/category/icon, **metric** ∈
+  BIGUPS_RECEIVED | BIGUPS_GIVEN | GAMES_WON | CHECKIN_STREAK | CHECKINS, threshold, period LIFETIME|MONTHLY)
+  + `achievement_awards` (unique per achievement+user+periodKey). `GET /api/achievements/me` computes each
+  metric & **auto-awards** newly-earned (idempotent); admin CRUD. Earned badges show on the **profile** +
+  an **Achievements page** (earned + progress bars). Ties together recognition/tournaments/streaks.
+  Verified 11/11. (MONTHLY filters timestamped metrics; GAMES_WON/CHECKIN_STREAK are point-in-time.)
+- **Marketplace + lottery ✅ BUILT.** `marketplace_items` (admin CRUD: name/icon/cost/active) + `redemptions`
+  (name snapshot). Redeem → balance check → **append-only ledger spend** (negative delta) + a redemption row;
+  Shop page (storefront, "Not enough" gating, my redemptions; admin manage). **Daily lottery** `POST
+  /api/points/lottery` (once/day, random 5–50 windfall) — dashboard "🎲 Daily draw". Closes the earn/spend
+  loop. Verified 10/10 (spend, insufficient 400, hidden items, append-only spend, once-a-day lottery).
+- **Equip-able profile flair ✅ BUILT.** Marketplace items have a `kind` (PERK | PROFILE); PROFILE items
+  grant an `augment` (a flair emoji). Redeeming a PROFILE item makes it **owned** (snapshot on the
+  redemption; can't re-buy); `users.flair` is the equipped one, set via PATCH /api/profile/me {flair}
+  (validated against owned), surfaced via /me + profile + shown next to the name on the profile overlay,
+  shell footer, and dashboard greeting. `GET /api/profile/augments` lists owned + equipped. Verified 10/10.
+- **Richer augments — frames/colours/titles ✅ BUILT.** PROFILE items now carry an `augmentKind` slot:
+  **FLAIR** (emoji, existing), **TITLE** (short text shown under the name), **COLOR** (a fixed-palette token
+  — `COLOR_TOKENS` rose/amber/emerald/sky/violet/slate — that colours the name **and** the avatar ring, i.e.
+  the "frame"). `marketplace_items.augment_kind` + `redemptions.augment_kind` (snapshot) + `users.title` /
+  `users.name_color` (migration 0045, backfills existing PROFILE rows → FLAIR). Equip via the same
+  `PATCH /api/profile/me {flair,title,nameColor}` — each validated against an owned redemption in the
+  matching slot (`augment_not_owned`); `/api/profile/augments` returns owned grouped `{FLAIR,TITLE,COLOR}`
+  + equipped per slot. Admin shop form picks the kind (emoji input / title input / colour dropdown), with
+  server-side palette + length validation. Avatar gained a `ring` prop. Verified 17/17.
+- **Dept-scoped + scheduled achievements ✅ BUILT.** Achievement defs gained `scopeKind`/`scopeId`
+  (ALL | NODE | GROUP — reuses the `canSeeScoped` spine) and an optional inclusive `activeFrom`/`activeUntil`
+  date window (migration 0046, existing rows default scopeKind ALL). Catalog + `/me` now only show defs the
+  viewer is in scope for, and `/me` auto-awards **only while the window is ACTIVE** (UPCOMING/ENDED are
+  visible-but-not-earnable, so a time-boxed challenge can't be pre- or post-claimed). Admin form (still
+  TENANT_ADMIN) got an Everyone/Department/Team picker (reusing `useOrgNodes`/`useGroupsList`) + two date
+  inputs; rows show a scope chip + a status chip (starts/until/ended). Cross-field validation (node needs a
+  target, window can't invert) lives in the handler so PATCH `.partial()` still works. Verified 12/12.
+- **Sidebar ✅ reorganized** into themed **collapsible** sections (Activities / Resources / Workplace +
+  admin People/Settings + Oversight); collapsed state persists; a collapsed section with pending badges
+  shows a count chip so notifications aren't hidden.
+- **Team calendar ✅ BUILT.** One **"Calendar"** sidebar page = a month grid showing big-ticket **Events**
+  (by startAt) **+ the daily check-in rewards + your check-in ✓** all in one view; **iCal export**
+  (`GET /api/events/calendar.ics`, scope-filtered, downloadable → any personal calendar); admins set
+  per-day rewards inline (admin-only). Events can **attach a List/to-dos** (`events.listId`, set on the
+  event detail, links to /lists/:id). The standalone "Check-in" nav item was removed — the daily check-in
+  action lives on the dashboard; rewards now live on the team calendar. Verified 8/8 (+11/11 calendar earlier).
+  - Deferred: iCal **import** (parsing external .ics → events); putting sessions on the calendar too.
+- **Calendar v2 ✅ BUILT.** **Reward-setting is its own capability** `reward.manage` (admin or granted —
+  e.g. HR; deliberately NOT the dept calendar manager; fail-closed) — the calendar's reward editor only
+  shows to those. **Scope filter** (Everything / Org-wide / Department / Team — events list now exposes
+  `scopeKind`). **Month / Week / Day views** (Week = days with timed events; Day = full detail + reward).
+  Verified 6/6.
+- **"Add to calendar" ✅ BUILT.** Reusable `AddToCalendar` popover (prefilled title + datetime + scope
+  picker → creates a PLAN event) on **notice posts** (prefill the notice title) and **list detail** (prefill
+  the list title + attach the list via `listId` on event-create). Verified 3/3. Next: a true time-grid
+  timetable (time slots × days with block-outs) if wanted; iCal **import**.
+Captured from the vision; NOT built yet. Keep it under Recognition conceptually but likely its **own
+window** once it grows. Build order TBD; each is a slice.
+- **Achievements** (admin-defined): thresholds set "in a clever way" — e.g. "Large commenter",
+  "Highest comments this month". Periodic (monthly) **and** lifetime. **Scoped org/dept** (some only
+  shown to a dept, to cut spam). **Categorized.** Admin controls visibility/rate to minimize noise.
+  Shows who earned what, monthly + all-time.
+- **Daily points lottery** — random windfalls; points spend on profile augmentations / little gifts.
+- **Daily login rewards + streaks** — claim small gifts by signing in; a work **loyalty program**.
+  Streak protection: a person can log **leave / sick days** to skip without breaking the streak.
+- **Marketplace** — designs, trinkets, achievements to "pimp" profiles; spent via points/lottery.
+- Foundation needed first: append-only **points_ledger** (CLAUDE.md), then earn/spend rails, then the
+  storefront + the profile-customization layer hanging off the profile overlay.
+
+### Org structure — de-locked for any company shape ✅ + next: a management view
+- **Reach generalized ✅** — capability scope went from fixed tiers (SELF/DEPT/DIVISION/ORG, keyed on
+  literal nodeType names) to **relative reach SELF / NODE (your home subtree) / ORG**. `orgNodes.nodeType`
+  is now **free-form** (companies name their own levels). Migration 0030 maps old grants → NODE. The tree
+  was always generic (parentId + path); only labels + reach were locked. Verified 9/9.
+- **Org management view ✅ BUILT** — /org now shows the full hierarchy with each named level, **per-node
+  member counts** (shared with member management), inline **rename**, **move** (reparent — re-roots the
+  subtree's paths; cycle-guarded), delete, and a **Recent changes** log (audits org.node_created/renamed/
+  moved/deleted via `GET /api/org/log`, admin-only). Rename never touches `path` (random segments) so
+  scope is unaffected; move rewrites the subtree path prefix. Verified 13/13.
+  - Note: org *nodes* ≠ `groups` (cross-cutting member sets, managed on the Members/Permissions side).
+- **Timezone** ✅ `tenants.timezone` (IANA, default UTC) + `features/tenant/routes.ts` (GET all / PATCH
+  admin, validated via Intl, audited `tenant.timezone_set`); Settings page picker. Scheduled-time
+  displays (sessions, clue release, matches) should render in this zone — **wiring those displays to it
+  is still TODO** (today it's stored + settable). This `tenant` feature is where the usage-log toggle lands.
+
+### Quick games ✅ BUILT — tic-tac-toe, connect four, checkers (activity engine)
+- All three are 1v1/turn-based activities sharing the RPS skeleton (two players pinned in
+  `activity.config`, board state in config — no extra table). Pure rules in
+  `features/activities/boardgames.ts` (initBoard/applyMove); one server-authoritative move endpoint
+  `POST /api/activities/:id/board/move` (+ `/board/rematch`); `board` payload block in currentActivity;
+  one `boardgame.tsx` panel renders all three; CATALOG + AddActivity reuse the RPS player picker.
+- Checkers engine handles forced captures, multi-jump chains, kinging, and win-by-no-legal-moves.
+- Verified 25/25 (pure rules for all 3 + HTTP turn/authz/win/rematch guards).
+- Not wired: a session-log summary for ended games (the live panel is complete); add if wanted.
+
+### Epic E2 — Events / team planning + galleries
+- **Slice 1 ✅ BUILT** — `events` (kind PLAN | FUND | THEME_DAY; title, instructions, scope ALL/NODE/GROUP,
+  startAt/endAt in tenant tz, goalAmount placeholder). Org-wide needs the new `event.manage` capability
+  (no-lockout; dept/team open). **Gallery** ✅ `event_photos` (uniquely numbered per event, URL-based),
+  `event_photo_comments` (one-level replies), `event_photo_likes` (count always shown; **liker names
+  hidden unless the creator/admin turns gallery anonymity OFF** — toggle built). Verified 14/14.
+  Files: `features/events/routes.ts`, desktop `features/events/page.tsx` + `detail.tsx`, `lib/events.ts`.
+- **Slice 2 ✅ BUILT — contributions / fund.** `event_contributions` is **append-only** (per CLAUDE.md):
+  a `ces_append_only()` trigger blocks UPDATE/DELETE for every role + the table is in the ces_app
+  REVOKE list. Record a contribution (amount + note) toward `goalAmount`; FUND-only, scope-gated;
+  progress bar + total/goal/mine + ledger list. Immutable once recorded (record-only). Verified 10/10
+  incl. the trigger rejecting edits/deletes. No payment rails — internal pledge tracker.
+- **Real photo upload ✅ BUILT (MinIO wired).** `lib/storage.ts` (MinIO client; endpoint accepts a bare
+  host OR a full URL) + `@fastify/multipart`. `POST /api/uploads` (auth, image-only, 8 MB) proxies to
+  MinIO (bucket `ces-uploads`, key `tenantId/uuid.ext`) → returns `{key, url:/api/uploads/<key>}`;
+  `GET /api/uploads/*` streams it back (auth-gated; **proxied so MinIO stays internal** — never exposed
+  to clients). Wired into the **profile avatar** + **gallery add-photo** (Upload button next to the URL
+  field; validators accept http(s) OR `/api/uploads/…`). Verified 9/9 (real round-trip, byte-for-byte,
+  auth, type guard).
+- **QR → phone-upload ✅ BUILT.** Organizer (event creator/admin) mints a signed, 2h-expiring HMAC token
+  (`GET /api/events/:id/upload-token` → `{token, url:<this-server>/u/<token>}`; non-organizers get 403).
+  The token IS the capability — `GET /u/:token` serves a self-contained no-login HTML page that POSTs to
+  `/api/uploads/qr/:token`, which verifies the token, proxies the image to MinIO and inserts an
+  `event_photos` row tagged "via QR". Served by the existing Fastify server (no new app); URL built from
+  the request host so a phone on the same LAN can reach it; opt-in (off until minted). Desktop shows a QR
+  (rendered client-side via `qrcode`) on the gallery. **Gotcha:** the ~150-char base64url token exceeds
+  Fastify's default `maxParamLength: 100` → silent JSON 404 on `/u/:token`; fixed by `maxParamLength: 256`
+  on the Fastify instance. Verified 7/7 (mint authz, public page, no-login upload, gallery insert, bad-token
+  401, expired page).
+- **iCal import ✅ BUILT (inverse of the export).** `POST /api/events/import-ics` takes raw `.ics` text,
+  parses VEVENTs (RFC 5545 line-unfolding; SUMMARY/DESCRIPTION/DTSTART/DTEND only; handles UTC `…Z`,
+  floating, `VALUE=DATE` all-day, and `TZID=` — the last two treated as UTC, no tz database shipped) and
+  creates **PLAN** events filed under the importer's department (NODE-scoped, importer is creator). One
+  click, no scope picker; caps at 200 and returns `{imported, skipped}`. Desktop: an "⤒ .ics" file-picker
+  next to the export button on the team calendar. Verified 10/10 (count/skip, unescape, fold-unfold, UTC &
+  all-day instants, no-events 400, no-department 400, unauth 401).
+- **Timetable (time-grid) view ✅ BUILT.** Fourth calendar view ("grid") next to month/week/day: **hours
+  across the top, days down the left** (the horizontal schedule the user asked for). Each day's events
+  render as positioned **block-outs** (left% = start hour, width% = duration) on their own stacked line so
+  overlaps never collide; hour window defaults to business hours (08–18) and widens to fit any event in the
+  visible week. Frontend-only (`TimetableView` in `features/calendar/page.tsx`) — the one backend change was
+  adding `endAt` to the `GET /api/events` list payload so durations render. Uses the browser's local hours
+  (tz-perfect placement deferred). Both typechecks clean; `endAt` round-trip smoke-tested.
+
+### Epic C — Competitions ("in-house competitions"). Reuses scope/groups + timezone
+- **Tournament bracketing ✅ BUILT (slice 1).** `tournaments` (title, gameLabel, scope, status, rounds) +
+  `tournament_players` (seeded) + `tournament_matches` (round, slot, player1/2, winner, scheduledAt).
+  Pure single-elim engine `bracket.ts` (`buildBracket` distributes byes one-per-match so two byes never
+  meet; `nextSlot` propagates winners) — tested. Create (pick entrants; org-wide needs `tournament.manage`),
+  bracket view (rounds as columns, winner highlight, champion banner), organizer reports results →
+  winners advance → final crowns champion + marks DONE; per-match scheduling in tenant tz. Verified 17/17.
+  - **Signup / quick / withdraw / champion award ✅ BUILT.** Create modes: **PICK** (choose entrants),
+    **QUICK** (auto-fill everyone in a scope via peopleInScope + random seed, starts now), **SIGNUP**
+    (status SIGNUP; `joinPolicy` OPEN=just join / APPLY=organizer approves; `requirements` text). Entrants
+    join/apply + can **withdraw** during signup; organizer accepts applicants + **starts** (random-seeds the
+    accepted into a bracket). Deciding the final **awards the champion** an official recognition AWARD
+    (shows on the wall + notifies). `tournament_players.state` (APPLIED/ACCEPTED), `tournaments.rounds`
+    nullable until start. Verified 13/13.
+  - **RPS settle-it ✅ BUILT.** The two players in a match can settle it in-app with Rock-Paper-Scissors
+    instead of waiting on the organizer. `POST /api/tournaments/:id/matches/:matchId/play {throw}` —
+    players only (organizer can't play); both throw **blind** (`p1_throw`/`p2_throw` cols), and the moment
+    both are in the winner is computed and run through the SAME `applyMatchWinner` advance/champion path as
+    manual entry; a **tie clears both throws** for a replay. The detail exposes per-viewer `canPlay`,
+    `myThrow`, `oppThrew` (boolean only — the opponent's actual throw is **never** sent until decided).
+    Desktop shows ✊✋✌️ buttons on your live match and polls every 3 s (function-form `refetchInterval`)
+    so a throw resolves without a refresh. Verified 12/12 (incl. no-leak + tie-replay).
+  - **Next (forks):** auto-advance from other game activities (checkers/quiz result); double-elim /
+    round-robin; auto time/court scheduling; "games won" feeds achievements (already wired as a metric).
+- **Still future:** media-submission vote/comment competitions (needs MinIO); timed scavenger hunt (clue
+  release via pg-boss, uses the tenant tz).
+- **Media-submission competitions** — entrants submit a video/photo/link; **staff vote + comment**
+  (reuse the recognition kudos+comments pattern + MinIO for uploads); leaderboard; scope-gated.
+- **Scavenger hunt** — **timed clue release** (clues unlock at set times, in the tenant timezone — needs
+  pg-boss scheduling), team submissions/answers, standings. The timezone setting above is a prerequisite.
+
+### Usage log (admin-toggleable; for dept heads / higher-ups) ✅ BUILT
+- Coarse, **content-free** view: who joined which sessions + the activity **TYPES** that ran
+  ("Friday Standup · Alice · Checkers"). Derived from sessions/participants/activities — **never** content,
+  and it never touches anonymity-critical tables (wellness, anonymous surveys, anonymous kudos).
+- **Off by default** (`tenants.usageLogEnabled`, toggled in Settings, audited). **Fail-closed** authz
+  (deliberate exception to no-lockout, since it's oversight): admin or the new scoped `usage.view`
+  capability; NODE reach → your subtree only, ORG → all. Nav "Usage" appears only when you can view AND
+  it's enabled (via `GET /api/usage/access`). `features/usage/routes.ts`. Verified 9/9.
 
 ### Epic 2 — Meeting toolkit  (high daily value, reuses the activity + session spine)
 - **2a. Artifacts on a session** — attach links, images, YouTube/video, files everyone can

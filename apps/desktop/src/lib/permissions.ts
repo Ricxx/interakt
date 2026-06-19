@@ -6,7 +6,8 @@ export type GroupCap = { capability: string; scope: string | null };
 export type PermGroup = { id: string; name: string; level: number; caps: GroupCap[]; parentIds: string[]; memberCount: number };
 export type GroupMember = { id: string; name: string };
 
-export const SCOPE_LABEL: Record<string, string> = { SELF: "Own team", DEPT: "Department", DIVISION: "Division", ORG: "Whole org" };
+// Reach is relative to where the person sits in the org tree (structure-agnostic).
+export const SCOPE_LABEL: Record<string, string> = { SELF: "Self only", NODE: "Their unit & below", ORG: "Whole org" };
 
 export function useCapabilities() {
   return useQuery({ queryKey: ["capabilities"], queryFn: () => api<{ capabilities: Capability[]; scopes: string[]; categories: string[] }>("/api/permission-groups/capabilities") });

@@ -34,6 +34,14 @@ import { QuizzesPage } from "./features/quizzes/page";
 import { QuizBuilderPage } from "./features/quizzes/builder";
 import { WellnessPage } from "./features/wellness/page";
 import { RecognitionPage } from "./features/recognition/page";
+import { EventsPage } from "./features/events/page";
+import { EventDetailPage } from "./features/events/detail";
+import { UsagePage } from "./features/usage/page";
+import { TournamentsPage } from "./features/tournaments/page";
+import { TournamentDetailPage } from "./features/tournaments/detail";
+import { TeamCalendarPage } from "./features/calendar/page";
+import { AchievementsPage } from "./features/achievements/page";
+import { MarketPage } from "./features/market/page";
 import { ProfileProvider } from "./features/profile/overlay";
 import { initTheme } from "./lib/prefs";
 import "./index.css";
@@ -77,6 +85,14 @@ function App() {
           <Route path="quizzes/:id" element={<QuizBuilderPage />} />
           <Route path="wellness" element={<WellnessPage />} />
           <Route path="recognition" element={<RecognitionPage />} />
+          <Route path="events" element={<EventsPage />} />
+          <Route path="events/:id" element={<EventDetailPage />} />
+          <Route path="usage" element={<UsagePage />} />
+          <Route path="tournaments" element={<TournamentsPage />} />
+          <Route path="tournaments/:id" element={<TournamentDetailPage />} />
+          <Route path="calendar" element={<TeamCalendarPage />} />
+          <Route path="achievements" element={<AchievementsPage />} />
+          <Route path="shop" element={<MarketPage />} />
           <Route path="requests" element={<RequestsPage />} />
           <Route path="boards" element={<BoardsPage />} />
           <Route path="boards/:id" element={<BoardDetailPage />} />

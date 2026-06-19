@@ -6,6 +6,10 @@ export const tenants = pgTable("tenants", {
   id: uuid("id").primaryKey().defaultRandom(),
   name: text("name").notNull(),
   registrationMode: text("registration_mode").notNull().default("INVITE_ONLY"), // INVITE_ONLY | OPEN (self-register → pending)
+  timezone: text("timezone").notNull().default("UTC"), // IANA tz; drives how scheduled times (sessions, clue release, matches) render
+  usageLogEnabled: boolean("usage_log_enabled").notNull().default(false), // off by default — opt-in oversight (reads as micromanagement)
+  profilePicsEnabled: boolean("profile_pics_enabled").notNull().default(true), // institution can turn profile pictures on/off
+
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -31,6 +35,13 @@ export const users = pgTable("users", {
   email: text("email").notNull().unique(),
   displayName: text("display_name").notNull(),
   jobTitle: text("job_title"), // optional, admin-set — e.g. "Senior Engineer" (display only, not a role)
+  avatarUrl: text("avatar_url"), // optional profile picture URL (self-set; shown only if the tenant allows pics)
+  statusText: text("status_text"), // optional self-set status/headline shown on the dashboard + profile
+  hobbies: text("hobbies"), // optional self-set hobbies / interests (free text, shown on the profile)
+  highSchool: text("high_school"), // optional self-set high school (free text, shown on the profile)
+  flair: text("flair"), // equipped FLAIR augment — an emoji shown next to the name (owned via a PROFILE redemption)
+  title: text("title"), // equipped TITLE augment — a short text title shown on the profile (owned)
+  nameColor: text("name_color"), // equipped COLOR augment — a palette token colouring the name + avatar ring (owned)
   passwordHash: text("password_hash"), // null = no local password (SSO-only / directory-only)
   role: text("role").notNull().default("MEMBER"), // TENANT_ADMIN|NODE_ADMIN|FACILITATOR|MEMBER
   status: text("status").notNull().default("ACTIVE"), // ACTIVE|DISABLED
@@ -121,6 +132,10 @@ export const activities = pgTable("activities", {
     pollCloseAt?: string; // poll — auto-close deadline (ISO)
     pollClosed?: boolean; // poll — voting closed
     maxPerPerson?: number; // word cloud — max submissions per person
+    dotOptions?: string[]; // dot voting — the options to prioritize
+    dotBudget?: number; // dot voting — dots each person may spend
+    deck?: string[]; // planning poker — the cards available
+    pokerRevealed?: boolean; // planning poker — votes revealed to the room
     teamCount?: number; // team selector — number of teams
     surveyId?: string; // in-meeting survey — which survey to run
     quizId?: string; // live quiz — which quiz to run
@@ -130,8 +145,14 @@ export const activities = pgTable("activities", {
     quizDeadline?: string; // current question close time (ISO)
     closeSeconds?: number; // poll/draft — raw auto-close seconds (turned into pollCloseAt at launch)
     launchAt?: string; // draft — optional scheduled auto-launch time (ISO)
-    player1Id?: string; // rps
-    player2Id?: string; // rps
+    player1Id?: string; // rps + board games
+    player2Id?: string; // rps + board games
+    // board games (tic-tac-toe / connect four / checkers) — server-authoritative state
+    board?: number[];
+    turn?: 1 | 2;
+    winner?: 1 | 2 | "TIE" | null;
+    lastMove?: number | null;
+    mustJumpFrom?: number | null;
   }>(),
   state: text("state").notNull().default("LIVE"), // DRAFT (pre-planned) | LIVE | ENDED
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -297,6 +318,58 @@ export const pollVotes = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => ({ uniqVoter: unique().on(t.activityId, t.voterId) }),
+);
+
+// Planning Poker — agile estimation. Each person picks a card secretly; the host reveals all at once.
+export const pokerVotes = pgTable(
+  "poker_votes",
+  {
+    activityId: uuid("activity_id").notNull().references(() => activities.id),
+    voterId: uuid("voter_id").notNull().references(() => users.id),
+    card: text("card").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.activityId, t.voterId] }) }),
+);
+
+// Fist of Five — a one-tap confidence / temperature check (each person votes 1–5; latest vote wins).
+export const fistVotes = pgTable(
+  "fist_votes",
+  {
+    activityId: uuid("activity_id").notNull().references(() => activities.id),
+    voterId: uuid("voter_id").notNull().references(() => users.id),
+    value: integer("value").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.activityId, t.voterId] }) }),
+);
+
+// Dot voting / prioritization — each person spreads a budget of dots across the options.
+export const dotVotes = pgTable(
+  "dot_votes",
+  {
+    activityId: uuid("activity_id").notNull().references(() => activities.id),
+    voterId: uuid("voter_id").notNull().references(() => users.id),
+    optionIndex: integer("option_index").notNull(),
+    dots: integer("dots").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.activityId, t.voterId, t.optionIndex] }) }),
+);
+
+// Q&A queue (Slido-style) — participants post questions, upvote, host marks answered.
+export const qnaQuestions = pgTable("qna_questions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  activityId: uuid("activity_id").notNull().references(() => activities.id),
+  authorId: uuid("author_id").notNull().references(() => users.id),
+  body: text("body").notNull(),
+  answered: boolean("answered").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export const qnaUpvotes = pgTable(
+  "qna_upvotes",
+  {
+    questionId: uuid("question_id").notNull().references(() => qnaQuestions.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.questionId, t.userId] }) }),
 );
 
 // Team selector — who's on which team for a TEAM_SELECT activity (random + manual moves).
@@ -609,9 +682,232 @@ export const recognitionLikes = pgTable(
   {
     recognitionId: uuid("recognition_id").notNull().references(() => recognitions.id),
     userId: uuid("user_id").notNull().references(() => users.id),
+    anonymous: boolean("anonymous").notNull().default(false), // hide the giver's name (needs recognition.anonymous)
   },
   (t) => ({ pk: primaryKey({ columns: [t.recognitionId, t.userId] }) }),
 );
+
+// Per-user "last time I looked at recognition" marker — drives the unread badge for big-ups/awards
+// addressed to you (you, your department, or a team you're on). One row per user.
+export const recognitionReads = pgTable("recognition_reads", {
+  userId: uuid("user_id").primaryKey().references(() => users.id),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Short public comments on a recognition (attributed). Anyone in scope can add one.
+export const recognitionComments = pgTable("recognition_comments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  recognitionId: uuid("recognition_id").notNull().references(() => recognitions.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  body: text("body").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Events / team planning: a planned thing (PLAN), a contribution drive (FUND — goal set now,
+// pledges are a later slice), or a spirit/theme day (THEME_DAY — instructions + a photo gallery).
+// Visibility reuses the canSeeScoped spine (ALL/NODE/GROUP). Times render in the tenant timezone.
+export const events = pgTable("events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  kind: text("kind").notNull().default("PLAN"), // PLAN | FUND | THEME_DAY
+  title: text("title").notNull(),
+  instructions: text("instructions"), // what to do / the details
+  scopeKind: text("scope_kind").notNull().default("NODE"), // ALL | NODE | GROUP — who sees it
+  scopeId: uuid("scope_id"),
+  startAt: timestamp("start_at", { withTimezone: true }), // optional scheduled date/time
+  endAt: timestamp("end_at", { withTimezone: true }),
+  goalAmount: integer("goal_amount"), // FUND: target in minor units; contributions land in a later slice
+  galleryAnon: boolean("gallery_anon").notNull().default(true), // hide who liked photos (toggleable)
+  listId: uuid("list_id").references(() => lists.id), // optional attached list/to-do for the event
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A photo in an event's gallery. Uniquely numbered per event. URL-based for now (file upload via
+// MinIO + a QR phone-upload page is a later slice). `addedBy` distinguishes host vs participant shots.
+export const eventPhotos = pgTable(
+  "event_photos",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventId: uuid("event_id").notNull().references(() => events.id),
+    number: integer("number").notNull(), // unique caption-number within the event
+    url: text("url").notNull(),
+    caption: text("caption"),
+    addedBy: uuid("added_by").notNull().references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ uniqNo: unique().on(t.eventId, t.number) }),
+);
+
+// Comments on a photo, with one level of replies (parentId). Attributed.
+export const eventPhotoComments = pgTable("event_photo_comments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  photoId: uuid("photo_id").notNull().references(() => eventPhotos.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  body: text("body").notNull(),
+  parentId: uuid("parent_id"), // null = top-level; else a reply to that comment
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Contributions toward a FUND event's goal. APPEND-ONLY (CLAUDE.md names `contributions`): a recorded
+// contribution is immutable — no edits/deletes (enforced by a DB trigger + the restricted role).
+// Internal pledge tracker — amounts are minor units; there are no payment rails.
+export const eventContributions = pgTable("event_contributions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  eventId: uuid("event_id").notNull().references(() => events.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  amount: integer("amount").notNull(),
+  note: text("note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A like on a photo. Count is always shown; names are hidden unless the event turns gallery_anon off.
+export const eventPhotoLikes = pgTable(
+  "event_photo_likes",
+  {
+    photoId: uuid("photo_id").notNull().references(() => eventPhotos.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.photoId, t.userId] }) }),
+);
+
+// Marketplace — admins list items people spend points on (perks, real-world rewards, profile bits).
+export const marketplaceItems = pgTable("marketplace_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  icon: text("icon"),
+  cost: integer("cost").notNull(),
+  kind: text("kind").notNull().default("PERK"), // PERK (real-world/generic) | PROFILE (grants an equippable augment)
+  augment: text("augment"), // for PROFILE items: the value the buyer can equip (emoji / title text / colour token)
+  augmentKind: text("augment_kind"), // for PROFILE items: which slot — FLAIR | TITLE | COLOR
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A redemption — the points spend is an append-only points_ledger row; this records what was bought
+// (name snapshotted so history survives item deletion) for the person + admin fulfillment.
+export const redemptions = pgTable("redemptions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  itemId: uuid("item_id").references(() => marketplaceItems.id),
+  itemName: text("item_name").notNull(),
+  cost: integer("cost").notNull(),
+  augment: text("augment"), // snapshot of the granted augment value (so it survives item deletion)
+  augmentKind: text("augment_kind"), // snapshot of the augment slot — FLAIR | TITLE | COLOR
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Achievements — admin-defined badges earned when a metric crosses a threshold. metric ∈ a fixed
+// computable set; period LIFETIME | MONTHLY. Awarded automatically (idempotent) when a user qualifies.
+export const achievements = pgTable("achievements", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  category: text("category"), // free-text grouping (e.g. "Engagement", "Competition")
+  icon: text("icon"), // an emoji
+  metric: text("metric").notNull(), // BIGUPS_RECEIVED | BIGUPS_GIVEN | GAMES_WON | CHECKIN_STREAK | CHECKINS
+  threshold: integer("threshold").notNull(),
+  period: text("period").notNull().default("LIFETIME"), // LIFETIME | MONTHLY
+  scopeKind: text("scope_kind").notNull().default("ALL"), // ALL | NODE | GROUP — who the achievement applies to / is visible to
+  scopeId: uuid("scope_id"), // the node/group when scopeKind is NODE/GROUP
+  activeFrom: date("active_from"), // optional start of a time-limited challenge (inclusive, YYYY-MM-DD)
+  activeUntil: date("active_until"), // optional end of a time-limited challenge (inclusive)
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const achievementAwards = pgTable(
+  "achievement_awards",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    achievementId: uuid("achievement_id").notNull().references(() => achievements.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+    periodKey: text("period_key").notNull(), // "lifetime" or "YYYY-MM"
+    awardedAt: timestamp("awarded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ uniq: unique().on(t.achievementId, t.userId, t.periodKey) }),
+);
+
+// Points ledger — the gamification foundation (CLAUDE.md names `points_ledger` append-only). Every
+// earn/spend is an immutable row; a balance is the sum of deltas. Reasons: "checkin", "streak_bonus", …
+export const pointsLedger = pgTable("points_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  delta: integer("delta").notNull(), // + earn, − spend
+  reason: text("reason").notNull(),
+  createdDay: date("created_day").notNull(), // the day it was earned (drives daily-once + streaks)
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A configurable reward on the daily check-in calendar (admins set these). kind: POINTS (auto-credited)
+// | PRIZE (real-world, fulfilled offline) | TITLE | PROFILE (a future profile enhancement). One per day.
+export const checkinRewards = pgTable(
+  "checkin_rewards",
+  {
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    day: date("day").notNull(),
+    kind: text("kind").notNull(), // POINTS | PRIZE | TITLE | PROFILE
+    label: text("label").notNull(),
+    points: integer("points").notNull().default(0), // used when kind = POINTS
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.tenantId, t.day] }) }),
+);
+
+// Days a person flagged as leave/sick so a gap doesn't break their check-in streak (loyalty program).
+export const pointsLeaveDays = pgTable(
+  "points_leave_days",
+  {
+    userId: uuid("user_id").notNull().references(() => users.id),
+    day: date("day").notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.userId, t.day] }) }),
+);
+
+// Tournaments — single-elimination brackets for in-house competitions (any game, e.g. checkers, or an
+// offline contest). Visibility reuses the canSeeScoped spine. Matches carry an optional scheduled time
+// (rendered in the tenant timezone). Results are reported by the organizer (auto-from-activity is later).
+export const tournaments = pgTable("tournaments", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  title: text("title").notNull(),
+  gameLabel: text("game_label"), // free text — what they're competing at ("Checkers", "Chess", "Quiz")
+  scopeKind: text("scope_kind").notNull().default("NODE"), // ALL | NODE | GROUP
+  scopeId: uuid("scope_id"),
+  status: text("status").notNull().default("ACTIVE"), // SIGNUP (open for entrants) | ACTIVE | DONE
+  joinPolicy: text("join_policy").notNull().default("OPEN"), // SIGNUP tournaments: OPEN (just join) | APPLY (organizer approves)
+  requirements: text("requirements"), // free text shown to would-be entrants during signup
+  rounds: integer("rounds"), // null until the bracket is generated (seeded at start)
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const tournamentPlayers = pgTable("tournament_players", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tournamentId: uuid("tournament_id").notNull().references(() => tournaments.id),
+  userId: uuid("user_id").notNull().references(() => users.id),
+  seed: integer("seed").notNull().default(0),
+  state: text("state").notNull().default("ACCEPTED"), // APPLIED (awaiting organizer) | ACCEPTED (in the field)
+});
+
+export const tournamentMatches = pgTable("tournament_matches", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tournamentId: uuid("tournament_id").notNull().references(() => tournaments.id),
+  round: integer("round").notNull(),
+  slot: integer("slot").notNull(),
+  player1Id: uuid("player1_id").references(() => users.id),
+  player2Id: uuid("player2_id").references(() => users.id),
+  winnerId: uuid("winner_id").references(() => users.id),
+  scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
+  // Rock-Paper-Scissors settle-it: each player's throw (ROCK/PAPER/SCISSORS). When both are in, the
+  // winner is computed and advanced; a tie clears both for a replay. Hidden from the opponent until decided.
+  p1Throw: text("p1_throw"),
+  p2Throw: text("p2_throw"),
+});
 
 // Quizzes — Kahoot-style. Reusable templates (a pool): build once, launch as a QUIZ activity
 // any number of times. Questions carry the correct answer, optional media, timer, and points.

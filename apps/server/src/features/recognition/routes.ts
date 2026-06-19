@@ -1,13 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { alias } from "drizzle-orm/pg-core";
-import { and, count, desc, eq, gte, inArray, lt } from "drizzle-orm";
+import { and, count, desc, eq, gt, gte, inArray, lt } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { recognitions, recognitionLikes, users, orgNodes, groups } from "../../db/schema.js";
+import { recognitions, recognitionLikes, recognitionComments, recognitionReads, groupMembers, users, orgNodes, groups } from "../../db/schema.js";
 import { requireAuth } from "../../auth.js";
 import { recordAudit } from "../../lib/audit.js";
 import { can, hasScope, isGoverned } from "../../lib/capabilities.js";
 import { canSeeScoped, scopeLabel } from "../../lib/scopeAccess.js";
+import { ancestorNodes, userNodeId } from "../../lib/orgScope.js";
 import { peopleInScope } from "../../lib/scope.js";
 
 // Fixed preset of badges. Keep small — the frontend renders the same keys with emoji/labels.
@@ -19,7 +20,7 @@ export function recognitionRoutes(app: FastifyInstance) {
   // A plain peer big-up (to a person, their own dept, no overrides) is open to everyone. Anything
   // "official" — an AWARD, a dept/team recipient, or a wider/custom visibility — needs the
   // recognition.award capability. No-lockout: ungoverned tenants stay open; admins always pass.
-  type Me = { id: string; tenantId: string; role: string };
+  type Me = { id: string; tenantId: string; role: string; nodeId?: string | null };
   async function mayIssueOfficial(me: Me, scopeKind: string, scopeId: string | null): Promise<boolean> {
     if (!(await isGoverned(me.id))) return true;
     if (scopeKind === "ALL") return hasScope(me, "recognition.award", "ORG");
@@ -136,37 +137,99 @@ export function recognitionRoutes(app: FastifyInstance) {
         recipientTitle: u?.jobTitle ?? null, recipientDept: u?.dept ?? null,
         scope: await scopeLabel(me.tenantId, r.scopeKind, r.scopeId),
         canDelete: isAdmin || r.fromId === me.id,
-        likes: 0, likedByMe: false,
+        kudos: [] as { name: string }[], myKudos: null as "PUBLIC" | "ANON" | null, commentCount: 0,
       });
     }
 
-    // Attach like counts + whether the viewer liked each (no notifications on likes).
+    // Attach the kudos-givers (a medal row) + the viewer's own kudos. Anonymous givers never expose
+    // their name or id over the wire — they render as "Anonymous". No notifications on kudos.
     const visIds = items.map((i) => i.id);
     if (visIds.length) {
-      const counts = new Map<string, number>();
-      const mine = new Set<string>();
-      for (const l of await db.select({ rid: recognitionLikes.recognitionId, uid: recognitionLikes.userId }).from(recognitionLikes).where(inArray(recognitionLikes.recognitionId, visIds))) {
-        counts.set(l.rid, (counts.get(l.rid) ?? 0) + 1);
-        if (l.uid === me.id) mine.add(l.rid);
+      const likeRows = await db.select({ rid: recognitionLikes.recognitionId, uid: recognitionLikes.userId, anon: recognitionLikes.anonymous }).from(recognitionLikes).where(inArray(recognitionLikes.recognitionId, visIds));
+      const namedIds = [...new Set(likeRows.filter((l) => !l.anon).map((l) => l.uid))];
+      const likerName = new Map(namedIds.length ? (await db.select({ id: users.id, name: users.displayName }).from(users).where(inArray(users.id, namedIds))).map((x) => [x.id, x.name]) : []);
+      const byRec = new Map<string, { name: string }[]>();
+      for (const l of likeRows) byRec.set(l.rid, [...(byRec.get(l.rid) ?? []), { name: l.anon ? "Anonymous" : likerName.get(l.uid) ?? "Anonymous" }]);
+      for (const i of items) {
+        i.kudos = byRec.get(i.id) ?? [];
+        const my = likeRows.find((l) => l.rid === i.id && l.uid === me.id);
+        i.myKudos = my ? (my.anon ? "ANON" : "PUBLIC") : null;
       }
-      for (const i of items) { i.likes = counts.get(i.id) ?? 0; i.likedByMe = mine.has(i.id); }
+      const cc = new Map<string, number>();
+      for (const c of await db.select({ rid: recognitionComments.recognitionId }).from(recognitionComments).where(inArray(recognitionComments.recognitionId, visIds))) cc.set(c.rid, (cc.get(c.rid) ?? 0) + 1);
+      for (const i of items) i.commentCount = cc.get(i.id) ?? 0;
     }
-    return { items };
+    const canAnon = (await isGoverned(me.id)) ? await can(me, "recognition.anonymous") : true;
+    return { items, canAnon };
   });
 
-  // Star / un-star a recognition (toggle). Visible support only — never notifies.
-  app.post("/api/recognitions/:id/like", { preHandler: requireAuth }, async (req, reply) => {
+  // Comments on a recognition (attributed). List/add need scope visibility; delete = author or admin.
+  app.get("/api/recognitions/:id/comments", { preHandler: requireAuth }, async (req, reply) => {
     const id = z.string().uuid().safeParse((req.params as { id: string }).id);
     if (!id.success) return reply.code(400).send({ error: "invalid_input" });
     const me = req.currentUser! as Me;
     const [r] = await db.select().from(recognitions).where(and(eq(recognitions.id, id.data), eq(recognitions.tenantId, me.tenantId)));
     if (!r) return reply.code(404).send({ error: "not_found" });
     if (!(await canSee(me, r))) return reply.code(403).send({ error: "forbidden" });
-    const [existing] = await db.select().from(recognitionLikes).where(and(eq(recognitionLikes.recognitionId, id.data), eq(recognitionLikes.userId, me.id)));
-    if (existing) await db.delete(recognitionLikes).where(and(eq(recognitionLikes.recognitionId, id.data), eq(recognitionLikes.userId, me.id)));
-    else await db.insert(recognitionLikes).values({ recognitionId: id.data, userId: me.id });
+    const author = alias(users, "author");
+    const isAdmin = me.role === "TENANT_ADMIN";
+    const rows = await db
+      .select({ id: recognitionComments.id, body: recognitionComments.body, createdAt: recognitionComments.createdAt, authorId: recognitionComments.userId, authorName: author.displayName })
+      .from(recognitionComments)
+      .innerJoin(author, eq(author.id, recognitionComments.userId))
+      .where(eq(recognitionComments.recognitionId, id.data))
+      .orderBy(recognitionComments.createdAt);
+    return { comments: rows.map((c) => ({ ...c, canDelete: isAdmin || c.authorId === me.id })) };
+  });
+
+  app.post("/api/recognitions/:id/comments", { preHandler: requireAuth }, async (req, reply) => {
+    const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+    const body = z.object({ body: z.string().trim().min(1).max(500) }).safeParse(req.body ?? {});
+    if (!id.success || !body.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser! as Me;
+    const [r] = await db.select().from(recognitions).where(and(eq(recognitions.id, id.data), eq(recognitions.tenantId, me.tenantId)));
+    if (!r) return reply.code(404).send({ error: "not_found" });
+    if (!(await canSee(me, r))) return reply.code(403).send({ error: "forbidden" });
+    const [row] = await db.insert(recognitionComments).values({ recognitionId: id.data, userId: me.id, body: body.data.body.trim() }).returning({ id: recognitionComments.id });
+    return { id: row.id };
+  });
+
+  app.delete("/api/recognitions/comments/:cid", { preHandler: requireAuth }, async (req, reply) => {
+    const cid = z.string().uuid().safeParse((req.params as { cid: string }).cid);
+    if (!cid.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser! as Me;
+    const [c] = await db
+      .select({ id: recognitionComments.id, userId: recognitionComments.userId })
+      .from(recognitionComments)
+      .innerJoin(recognitions, eq(recognitions.id, recognitionComments.recognitionId))
+      .where(and(eq(recognitionComments.id, cid.data), eq(recognitions.tenantId, me.tenantId)));
+    if (!c) return reply.code(404).send({ error: "not_found" });
+    if (c.userId !== me.id && me.role !== "TENANT_ADMIN") return reply.code(403).send({ error: "forbidden" });
+    await db.delete(recognitionComments).where(eq(recognitionComments.id, cid.data));
+    return { ok: true };
+  });
+
+  // Whether this user may give kudos anonymously (no-lockout: ungoverned open, admin bypass).
+  const mayBeAnon = async (me: Me) => (!(await isGoverned(me.id)) ? true : can(me, "recognition.anonymous"));
+
+  // Give / change / remove kudos. Same anonymity → toggles off; different → switches; never notifies.
+  app.post("/api/recognitions/:id/like", { preHandler: requireAuth }, async (req, reply) => {
+    const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+    const body = z.object({ anonymous: z.boolean().optional() }).safeParse(req.body ?? {});
+    if (!id.success || !body.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser! as Me;
+    const want = body.data.anonymous === true;
+    if (want && !(await mayBeAnon(me))) return reply.code(403).send({ error: "forbidden" });
+    const [r] = await db.select().from(recognitions).where(and(eq(recognitions.id, id.data), eq(recognitions.tenantId, me.tenantId)));
+    if (!r) return reply.code(404).send({ error: "not_found" });
+    if (!(await canSee(me, r))) return reply.code(403).send({ error: "forbidden" });
+    const mine = and(eq(recognitionLikes.recognitionId, id.data), eq(recognitionLikes.userId, me.id));
+    const [existing] = await db.select().from(recognitionLikes).where(mine);
+    if (!existing) await db.insert(recognitionLikes).values({ recognitionId: id.data, userId: me.id, anonymous: want });
+    else if (existing.anonymous === want) await db.delete(recognitionLikes).where(mine); // toggle off
+    else await db.update(recognitionLikes).set({ anonymous: want }).where(mine); // switch public ↔ anon
     const [{ n }] = await db.select({ n: count() }).from(recognitionLikes).where(eq(recognitionLikes.recognitionId, id.data));
-    return { liked: !existing, likes: Number(n) };
+    return { myKudos: !existing || existing.anonymous !== want ? (want ? "ANON" : "PUBLIC") : null, likes: Number(n) };
   });
 
   // Members behind a dept/team award (lazy-loaded when the card is clicked).
@@ -211,6 +274,41 @@ export function recognitionRoutes(app: FastifyInstance) {
     return { windowDays: BOARD_DAYS, people, departments };
   });
 
+  // Unread badge: recognitions addressed to ME (me, my department subtree, or a team I'm on) since I
+  // last looked. Excludes ones I gave myself. Kudos/comments never notify — only the recognition itself.
+  app.get("/api/recognitions/unread", { preHandler: requireAuth }, async (req) => {
+    const me = req.currentUser! as Me;
+    const [read] = await db.select({ at: recognitionReads.lastSeenAt }).from(recognitionReads).where(eq(recognitionReads.userId, me.id));
+    const since = read?.at ?? new Date(0);
+    const rows = await db
+      .select({ toUserId: recognitions.toUserId, recipientType: recognitions.recipientType, recipientNodeId: recognitions.recipientNodeId, recipientGroupId: recognitions.recipientGroupId, fromId: recognitions.fromUserId })
+      .from(recognitions)
+      .where(and(eq(recognitions.tenantId, me.tenantId), gt(recognitions.createdAt, since)))
+      .orderBy(desc(recognitions.createdAt))
+      .limit(500);
+    if (!rows.length) return { count: 0 };
+    const myNode = me.nodeId ?? (await userNodeId(me.id));
+    const anc = myNode ? await ancestorNodes(me.tenantId, myNode) : new Set<string>(); // recipientNode that is me-or-an-ancestor ⇒ I'm under it
+    const myGroups = new Set((await db.select({ g: groupMembers.groupId }).from(groupMembers).where(eq(groupMembers.userId, me.id))).map((r) => r.g));
+    let count = 0;
+    for (const r of rows) {
+      if (r.fromId === me.id) continue;
+      const mine =
+        (r.recipientType === "USER" && r.toUserId === me.id) ||
+        (r.recipientType === "NODE" && !!r.recipientNodeId && anc.has(r.recipientNodeId)) ||
+        (r.recipientType === "GROUP" && !!r.recipientGroupId && myGroups.has(r.recipientGroupId));
+      if (mine) count++;
+    }
+    return { count };
+  });
+
+  // Mark recognition seen (clears the badge) — called when you open the Recognition page.
+  app.post("/api/recognitions/read", { preHandler: requireAuth }, async (req) => {
+    const me = req.currentUser! as Me;
+    await db.insert(recognitionReads).values({ userId: me.id, lastSeenAt: new Date() }).onConflictDoUpdate({ target: recognitionReads.userId, set: { lastSeenAt: new Date() } });
+    return { ok: true };
+  });
+
   // Remove a big-up: the giver can take theirs back; an admin can moderate any (audited).
   app.delete("/api/recognitions/:id", { preHandler: requireAuth }, async (req, reply) => {
     const id = z.string().uuid().safeParse((req.params as { id: string }).id);
@@ -221,6 +319,7 @@ export function recognitionRoutes(app: FastifyInstance) {
     const isAdmin = me.role === "TENANT_ADMIN";
     if (row.fromUserId !== me.id && !isAdmin) return reply.code(403).send({ error: "forbidden" });
     await db.delete(recognitionLikes).where(eq(recognitionLikes.recognitionId, id.data));
+    await db.delete(recognitionComments).where(eq(recognitionComments.recognitionId, id.data));
     await db.delete(recognitions).where(eq(recognitions.id, id.data));
     if (isAdmin && row.fromUserId !== me.id) await recordAudit({ action: "recognition.moderated", tenantId: me.tenantId, actorId: me.id, meta: { id: id.data } });
     return { ok: true };

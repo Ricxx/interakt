@@ -51,7 +51,7 @@ function GroupCard({ group, groups, caps, categories, scopes }: { group: PermGro
   const others = groups.filter((g) => g.id !== group.id);
 
   function toggle(cap: Capability, on: boolean) {
-    const next: GroupCap[] = caps.filter((c) => (c.key === cap.key ? on : current.has(c.key))).map((c) => ({ capability: c.key, scope: c.key === cap.key ? (cap.scoped ? "DEPT" : null) : current.get(c.key) ?? null }));
+    const next: GroupCap[] = caps.filter((c) => (c.key === cap.key ? on : current.has(c.key))).map((c) => ({ capability: c.key, scope: c.key === cap.key ? (cap.scoped ? "NODE" : null) : current.get(c.key) ?? null }));
     setCaps.mutate({ id: group.id, caps: next });
   }
   function setScope(cap: Capability, scope: string) {
@@ -108,7 +108,7 @@ function GroupCard({ group, groups, caps, categories, scopes }: { group: PermGro
                       <input type="checkbox" checked={on} onChange={(e) => toggle(c, e.target.checked)} />
                       <span className="flex-1">{c.label}</span>
                       {c.scoped && on && (
-                        <select value={current.get(c.key) ?? "DEPT"} onChange={(e) => setScope(c, e.target.value)} className="rounded border border-border bg-surface px-1 py-0.5 text-xs">
+                        <select value={current.get(c.key) ?? "NODE"} onChange={(e) => setScope(c, e.target.value)} className="rounded border border-border bg-surface px-1 py-0.5 text-xs">
                           {scopes.map((s) => <option key={s} value={s}>{SCOPE_LABEL[s] ?? s}</option>)}
                         </select>
                       )}
