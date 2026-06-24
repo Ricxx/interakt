@@ -6,6 +6,13 @@ export type Points = { balance: number; streak: number; checkedInToday: boolean;
 export function usePoints() {
   return useQuery({ queryKey: ["points"], queryFn: () => api<Points>("/api/points/me") });
 }
+export function useGiftPoints() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { toUserId: string; amount: number; note?: string }) => api<{ balance: number }>("/api/points/gift", { method: "POST", body: JSON.stringify(v) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["points"] }); qc.invalidateQueries({ queryKey: ["profile"] }); },
+  });
+}
 export function useCheckin() {
   const qc = useQueryClient();
   return useMutation({ mutationFn: () => api<{ awarded?: number; streak: number; balance: number; prize?: { kind: string; label: string } | null }>("/api/points/checkin", { method: "POST" }), onSuccess: () => { qc.invalidateQueries({ queryKey: ["points"] }); qc.invalidateQueries({ queryKey: ["points-cal"] }); } });
@@ -14,9 +21,17 @@ export function useLottery() {
   const qc = useQueryClient();
   return useMutation({ mutationFn: () => api<{ won?: number; already?: boolean; balance: number }>("/api/points/lottery", { method: "POST" }), onSuccess: () => { qc.invalidateQueries({ queryKey: ["points"] }); qc.invalidateQueries({ queryKey: ["market"] }); } });
 }
-export function useToggleLeave() {
+// Admin streak fix-up (reward.manage): protect a day for a member who was away, and read their streak.
+export type AdminStreak = { streak: number; checkedInToday: boolean; leaveDays: string[] };
+export function useAdminStreak(userId: string | null, enabled: boolean) {
+  return useQuery({ queryKey: ["admin-streak", userId], enabled: enabled && !!userId, queryFn: () => api<AdminStreak>(`/api/points/streak/${userId}`) });
+}
+export function useAdminProtectDay(userId: string) {
   const qc = useQueryClient();
-  return useMutation({ mutationFn: (day?: string) => api<{ onLeave: boolean }>("/api/points/leave", { method: "POST", body: JSON.stringify({ day }) }), onSuccess: () => { qc.invalidateQueries({ queryKey: ["points"] }); qc.invalidateQueries({ queryKey: ["points-cal"] }); } });
+  return useMutation({
+    mutationFn: (v: { day: string; on: boolean }) => api<{ onLeave: boolean }>(`/api/points/leave-for/${userId}`, { method: "POST", body: JSON.stringify(v) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["admin-streak", userId] }); qc.invalidateQueries({ queryKey: ["profile", userId] }); },
+  });
 }
 
 export type CalReward = { day: string; kind: "POINTS" | "PRIZE" | "TITLE" | "PROFILE"; label: string; points: number };

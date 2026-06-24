@@ -15,6 +15,7 @@ export type CurrentUser = {
   avatarUrl: string | null;
   statusText: string | null;
   flair: string | null;
+  nodeId: string | null;
 };
 
 // Make req.currentUser available everywhere (set by the loadUser hook below).
@@ -36,12 +37,13 @@ async function getUserById(id: string): Promise<CurrentUser | null> {
       avatarUrl: users.avatarUrl,
       statusText: users.statusText,
       flair: users.flair,
+      nodeId: users.nodeId,
     })
     .from(users)
     .where(eq(users.id, id))
     .limit(1);
   if (!u || u.status !== "ACTIVE") return null;
-  return { id: u.id, tenantId: u.tenantId, email: u.email, displayName: u.displayName, role: u.role, avatarUrl: u.avatarUrl, statusText: u.statusText, flair: u.flair };
+  return { id: u.id, tenantId: u.tenantId, email: u.email, displayName: u.displayName, role: u.role, avatarUrl: u.avatarUrl, statusText: u.statusText, flair: u.flair, nodeId: u.nodeId };
 }
 
 /** Reads + verifies the signed session cookie and loads the user (or null). */
@@ -65,7 +67,7 @@ export function setSession(reply: FastifyReply, userId: string): void {
     sameSite: "lax",
     secure: env.isProd, // requires HTTPS in production
     path: "/",
-    maxAge: 60 * 60 * 8, // 8h
+    maxAge: 60 * 60 * 24 * 30, // 30 days — "always logged in" for the daily-driver desktop app
   });
 }
 

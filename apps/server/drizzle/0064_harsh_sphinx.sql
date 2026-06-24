@@ -1,0 +1,1 @@
+ALTER TABLE "tenants" ADD COLUMN "disabled_modules" jsonb DEFAULT '[]'::jsonb NOT NULL;

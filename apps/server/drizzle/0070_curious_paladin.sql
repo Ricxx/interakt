@@ -1,0 +1,1 @@
+ALTER TABLE "tenants" ADD COLUMN "footer_credit" boolean DEFAULT true NOT NULL;

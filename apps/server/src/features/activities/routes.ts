@@ -3,24 +3,28 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { activities, activityPicks, activityVotes, brainstormComments, brainstormIdeas, brainstormLikes, dotVotes, fistVotes, pokerVotes, pollVotes, qnaQuestions, qnaUpvotes, rpsRounds, sessions, sessionParticipants, sessionTasks, straws, surveys, surveyQuestions, surveyResponses, teamAssignments, triviaSubmissions, users, wordcloudEntries } from "../../db/schema.js";
+import { activities, activityPicks, activityVotes, brainstormComments, brainstormIdeas, brainstormLikes, checklistTicks, dotVotes, fistVotes, pokerVotes, pollVotes, qnaQuestions, qnaUpvotes, retroCards, retroCardVotes, rpsRounds, scoreboards, sessions, sessionParticipants, sessionTasks, straws, suggestionVotes, surveys, surveyQuestions, surveyResponses, teamAssignments, triviaSubmissions, users, wordcloudEntries } from "../../db/schema.js";
 import { saveAnswers, submitResponse, findResponse } from "../surveys/respond.js";
 import { quizzes, quizQuestions, quizAnswers } from "../../db/schema.js";
 import { gradeAndStore } from "../quizzes/game.js";
 import { requireAuth } from "../../auth.js";
 import { hub } from "../../lib/realtime.js";
 import { canRunActivities, isInRoom } from "../../lib/sessionControl.js";
+import { can, hasScope } from "../../lib/capabilities.js";
+import { canSeeScoped } from "../../lib/scopeAccess.js";
 import { recordTaskEvent } from "../tasks/events.js";
 import { pollCsv } from "../poll/payload.js";
 import { recordAudit } from "../../lib/audit.js";
 import { type BoardGame, initBoard, applyMove } from "./boardgames.js";
 import { POKER_DECK } from "../poker/payload.js";
+import { tournamentInTenant } from "../tournaments/activity-payload.js";
+import { boxItems } from "../feedback/payload.js";
 
 const BOARD_GAMES = ["TIC_TAC_TOE", "CONNECT_FOUR", "CHECKERS"] as const;
 const isBoardGame = (t: string): t is BoardGame => (BOARD_GAMES as readonly string[]).includes(t);
 
 const startBody = z.object({
-  type: z.enum(["RANDOMIZER", "NOMINATION", "BRAINSTORM", "RPS", "TASKS", "TASK_REVIEW", "TRIVIA", "POLL", "WORDCLOUD", "DRAW_STRAWS", "TEAM_SELECT", "SURVEY", "QUIZ", "QNA", "DOT_VOTE", "FIST", "POKER", "TIC_TAC_TOE", "CONNECT_FOUR", "CHECKERS"]),
+  type: z.enum(["RANDOMIZER", "NOMINATION", "BRAINSTORM", "RPS", "TASKS", "TASK_REVIEW", "TRIVIA", "POLL", "WORDCLOUD", "DRAW_STRAWS", "TEAM_SELECT", "SURVEY", "QUIZ", "QNA", "DOT_VOTE", "FIST", "POKER", "RETRO", "CHECKLIST", "TIMER", "ROUNDROBIN", "SCOREBOARD", "TOURNAMENT", "FEEDBACK", "TIC_TAC_TOE", "CONNECT_FOUR", "CHECKERS"]),
   title: z.string().min(1).max(120),
   draft: z.boolean().optional(), // pre-plan without launching
   agendaItemId: z.string().uuid().optional(), // tie a draft to an agenda item
@@ -30,7 +34,7 @@ const startBody = z.object({
       includeHost: z.boolean().optional(),
       anonymous: z.boolean().optional(),
       showCounts: z.boolean().optional(),
-      timerSeconds: z.number().int().min(5).max(600).optional(),
+      timerSeconds: z.number().int().min(5).max(3600).optional(),
       description: z.string().max(2000).optional(),
       bestOf: z.union([z.literal(1), z.literal(3), z.literal(5), z.literal(10)]).optional(),
       agreementKind: z.enum(["LOSER", "WINNER"]).optional(),
@@ -45,9 +49,16 @@ const startBody = z.object({
       maxPerPerson: z.number().int().min(1).max(10).optional(),
       dotOptions: z.array(z.string().min(1).max(120)).min(2).max(12).optional(),
       dotBudget: z.number().int().min(1).max(20).optional(),
+      retroColumns: z.array(z.string().min(1).max(40)).min(2).max(4).optional(),
+      checklistItems: z.array(z.string().min(1).max(200)).min(1).max(50).optional(),
       teamCount: z.number().int().min(2).max(6).optional(),
       surveyId: z.string().uuid().optional(),
       quizId: z.string().uuid().optional(),
+      scoreboardId: z.string().uuid().optional(),
+      tournamentId: z.string().uuid().optional(),
+      fbKind: z.enum(["SUGGESTION", "COMPLAINT"]).optional(),
+      fbScopeKind: z.enum(["ALL", "NODE"]).optional(),
+      fbScopeId: z.string().uuid().optional(),
     })
     .optional(),
 });
@@ -96,6 +107,7 @@ export function activityRoutes(app: FastifyInstance) {
       .returning();
     if (parsed.data.type === "RPS") await db.insert(rpsRounds).values({ activityId: activity.id, roundNo: 1, deadlineAt: rpsDeadline() });
     if (parsed.data.type === "DRAW_STRAWS") await seedStraws(activity.id, session);
+    if (parsed.data.type === "ROUNDROBIN") await seedRound(activity.id, session);
     if (parsed.data.type === "TEAM_SELECT") await seedTeams(activity.id, session, (built.config.teamCount as number) ?? 2);
     if (parsed.data.type === "SURVEY") await openSurveyForActivity(built.config.surveyId as string);
     await notify(session.id);
@@ -119,6 +131,7 @@ export function activityRoutes(app: FastifyInstance) {
     await db.update(activities).set({ state: "LIVE", config: built.config, startedBy: me, agendaItemId, createdAt: new Date() }).where(eq(activities.id, activity.id));
     if (activity.type === "RPS") await db.insert(rpsRounds).values({ activityId: activity.id, roundNo: 1, deadlineAt: rpsDeadline() });
     if (activity.type === "DRAW_STRAWS") await seedStraws(activity.id, session);
+    if (activity.type === "ROUNDROBIN") await seedRound(activity.id, session);
     if (activity.type === "TEAM_SELECT") await seedTeams(activity.id, session, (built.config.teamCount as number) ?? 2);
     if (activity.type === "SURVEY") await openSurveyForActivity(built.config.surveyId as string);
     if (activity.agendaItemId) await db.update(sessions).set({ activeAgendaId: activity.agendaItemId }).where(eq(sessions.id, session.id));
@@ -161,7 +174,7 @@ export function activityRoutes(app: FastifyInstance) {
     const joined = await db
       .select({ userId: sessionParticipants.userId })
       .from(sessionParticipants)
-      .where(and(eq(sessionParticipants.sessionId, ctx.session.id), eq(sessionParticipants.state, "JOINED")));
+      .where(and(eq(sessionParticipants.sessionId, ctx.session.id), eq(sessionParticipants.state, "JOINED"), eq(sessionParticipants.presentation, false)));
     const joinedSet = new Set(joined.map((j) => j.userId));
     if (ctx.activity.config?.includeHost) joinedSet.add(ctx.session.hostId); // host opted into the draw
     const removeMode = ctx.activity.config?.removeAfterPick !== false;
@@ -583,6 +596,155 @@ export function activityRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Round-robin: advance the speaking order. Controllers can go next/prev/restart; the current speaker
+  // may also tap "next" to pass it on themselves.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/round", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ action: z.enum(["next", "prev", "restart"]) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser!.id;
+    const ctx = await liveActivityInRoom(req.params.id, me);
+    if (!ctx || ctx.activity.type !== "ROUNDROBIN") return reply.code(403).send({ error: "not_in_room" });
+    const cfg = ctx.activity.config ?? {};
+    const order = cfg.roundOrder ?? [];
+    const idx = cfg.roundIndex ?? 0;
+    const isController = await canRunActivities(ctx.sessionId, me);
+    if (body.data.action === "restart") {
+      if (!isController) return reply.code(403).send({ error: "not_allowed" });
+      const [sess] = await db.select().from(sessions).where(eq(sessions.id, ctx.sessionId));
+      if (sess) await seedRound(ctx.activity.id, sess); // reshuffle, including anyone who joined since
+    } else if (body.data.action === "prev") {
+      if (!isController) return reply.code(403).send({ error: "not_allowed" });
+      await db.update(activities).set({ config: { ...cfg, roundIndex: Math.max(0, idx - 1) } }).where(eq(activities.id, ctx.activity.id));
+    } else {
+      if (!isController && order[idx] !== me) return reply.code(403).send({ error: "not_your_turn" });
+      await db.update(activities).set({ config: { ...cfg, roundIndex: Math.min(order.length, idx + 1) } }).where(eq(activities.id, ctx.activity.id));
+    }
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Feedback review: anyone in the room toggles an upvote on a box item (reuses the persistent box votes,
+  // so the in-meeting vote also ranks the box afterwards). Validated to the box this activity is running.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/feedback/vote", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ suggestionId: z.string().uuid() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "FEEDBACK") return reply.code(403).send({ error: "not_in_room" });
+    const cfg = ctx.activity.config ?? {};
+    const me = req.currentUser!;
+    const items = await boxItems(me.tenantId, cfg.fbKind ?? "SUGGESTION", cfg.fbScopeKind ?? "ALL", cfg.fbScopeId ?? null);
+    if (!items.some((i) => i.id === body.data.suggestionId)) return reply.code(400).send({ error: "not_in_box" });
+    const del = await db.delete(suggestionVotes).where(and(eq(suggestionVotes.suggestionId, body.data.suggestionId), eq(suggestionVotes.userId, me.id))).returning({ s: suggestionVotes.suggestionId });
+    if (!del.length) await db.insert(suggestionVotes).values({ suggestionId: body.data.suggestionId, userId: me.id });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Feedback review: host drives the focus — start/stop the voting timer, or spotlight an item to read out.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/feedback", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ action: z.enum(["start", "stop", "spotlight"]), index: z.number().int().min(-1).max(500).optional() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await hostActivity(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "FEEDBACK") return reply.code(403).send({ error: "not_allowed" });
+    const cfg = ctx.activity.config ?? {};
+    const next: Record<string, unknown> = { ...cfg };
+    if (body.data.action === "start") next.timerEndsAt = new Date(Date.now() + (cfg.timerSeconds ?? 120) * 1000).toISOString();
+    else if (body.data.action === "stop") next.timerEndsAt = undefined;
+    else next.fbSpotlight = body.data.index ?? -1;
+    await db.update(activities).set({ config: next }).where(eq(activities.id, ctx.activity.id));
+    await notify(ctx.activity.sessionId);
+    return { ok: true };
+  });
+
+  // Meeting timer: host drives a countdown (start/pause/resume/reset). State lives in config; clients
+  // compute the remaining time locally from `timerEndsAt`, so there's no per-second server traffic.
+  app.post<{ Params: { id: string } }>("/api/activities/:id/timer", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ action: z.enum(["start", "pause", "resume", "reset"]), seconds: z.number().int().min(5).max(3600).optional() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await hostActivity(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "TIMER") return reply.code(403).send({ error: "not_allowed" });
+    const cfg = ctx.activity.config ?? {};
+    const next: Record<string, unknown> = { ...cfg };
+    const now = Date.now();
+    if (body.data.action === "start") {
+      const secs = body.data.seconds ?? cfg.timerSeconds ?? 300;
+      next.timerSeconds = secs;
+      next.timerEndsAt = new Date(now + secs * 1000).toISOString();
+      next.timerPausedRemaining = undefined;
+    } else if (body.data.action === "pause") {
+      if (cfg.timerEndsAt) { next.timerPausedRemaining = Math.max(0, Math.round((new Date(cfg.timerEndsAt).getTime() - now) / 1000)); next.timerEndsAt = undefined; }
+    } else if (body.data.action === "resume") {
+      if (cfg.timerPausedRemaining != null) { next.timerEndsAt = new Date(now + cfg.timerPausedRemaining * 1000).toISOString(); next.timerPausedRemaining = undefined; }
+    } else {
+      next.timerEndsAt = undefined;
+      next.timerPausedRemaining = undefined;
+    }
+    await db.update(activities).set({ config: next }).where(eq(activities.id, ctx.activity.id));
+    await notify(ctx.activity.sessionId);
+    return { ok: true };
+  });
+
+  // Checklist: toggle an item ticked/unticked (anyone in the room; records who ticked it).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/checklist/toggle", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ index: z.number().int().min(0) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "CHECKLIST") return reply.code(403).send({ error: "not_in_room" });
+    if (body.data.index >= (ctx.activity.config?.checklistItems?.length ?? 0)) return reply.code(400).send({ error: "bad_item" });
+    const me = req.currentUser!.id;
+    const del = await db.delete(checklistTicks).where(and(eq(checklistTicks.activityId, ctx.activity.id), eq(checklistTicks.itemIndex, body.data.index))).returning({ i: checklistTicks.itemIndex });
+    if (!del.length) await db.insert(checklistTicks).values({ activityId: ctx.activity.id, itemIndex: body.data.index, checkedBy: me });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Checklist: host clears all ticks (re-run a recurring checklist).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/checklist/reset", { preHandler: requireAuth }, async (req, reply) => {
+    const ctx = await hostActivity(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "CHECKLIST") return reply.code(403).send({ error: "not_allowed" });
+    await db.delete(checklistTicks).where(eq(checklistTicks.activityId, ctx.activity.id));
+    await notify(ctx.activity.sessionId);
+    return { ok: true };
+  });
+
+  // Retro: add a card to a column (anyone in the room).
+  app.post<{ Params: { id: string } }>("/api/activities/:id/retro/card", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ column: z.number().int().min(0), body: z.string().trim().min(1).max(300) }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "RETRO") return reply.code(403).send({ error: "not_in_room" });
+    if (body.data.column >= (ctx.activity.config?.retroColumns?.length ?? 0)) return reply.code(400).send({ error: "bad_column" });
+    await db.insert(retroCards).values({ activityId: ctx.activity.id, authorId: req.currentUser!.id, column: body.data.column, body: body.data.body });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Retro: toggle an upvote on a card (anyone in the room).
+  app.post<{ Params: { id: string; cardId: string } }>("/api/activities/:id/retro/card/:cardId/vote", { preHandler: requireAuth }, async (req, reply) => {
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "RETRO") return reply.code(403).send({ error: "not_in_room" });
+    const [c] = await db.select({ id: retroCards.id }).from(retroCards).where(and(eq(retroCards.id, req.params.cardId), eq(retroCards.activityId, ctx.activity.id)));
+    if (!c) return reply.code(404).send({ error: "not_found" });
+    const me = req.currentUser!.id;
+    const del = await db.delete(retroCardVotes).where(and(eq(retroCardVotes.cardId, c.id), eq(retroCardVotes.userId, me))).returning({ c: retroCardVotes.cardId });
+    if (!del.length) await db.insert(retroCardVotes).values({ cardId: c.id, userId: me });
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
+  // Retro: delete a card (its author, or a controller).
+  app.delete<{ Params: { id: string; cardId: string } }>("/api/activities/:id/retro/card/:cardId", { preHandler: requireAuth }, async (req, reply) => {
+    const ctx = await liveActivityInRoom(req.params.id, req.currentUser!.id);
+    if (!ctx || ctx.activity.type !== "RETRO") return reply.code(403).send({ error: "not_in_room" });
+    const [c] = await db.select({ id: retroCards.id, authorId: retroCards.authorId }).from(retroCards).where(and(eq(retroCards.id, req.params.cardId), eq(retroCards.activityId, ctx.activity.id)));
+    if (!c) return reply.code(404).send({ error: "not_found" });
+    if (c.authorId !== req.currentUser!.id && !(await canRunActivities(ctx.sessionId, req.currentUser!.id))) return reply.code(403).send({ error: "forbidden" });
+    await db.delete(retroCardVotes).where(eq(retroCardVotes.cardId, c.id));
+    await db.delete(retroCards).where(eq(retroCards.id, c.id));
+    await notify(ctx.sessionId);
+    return { ok: true };
+  });
+
   // Planning Poker: pick (or change) your card while hidden (anyone in the room).
   app.post<{ Params: { id: string } }>("/api/activities/:id/poker/vote", { preHandler: requireAuth }, async (req, reply) => {
     const body = z.object({ card: z.string().min(1).max(8) }).safeParse(req.body);
@@ -798,7 +960,7 @@ function shuffle<T>(arr: T[]): T[] {
 // One straw per person in the room, with distinct lengths 1..N shuffled across positions
 // (so a straw's display slot tells you nothing about its length).
 async function seedStraws(activityId: string, session: { id: string; hostId: string }) {
-  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED")));
+  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED"), eq(sessionParticipants.presentation, false)));
   const people = new Set(joined.map((j) => j.userId));
   people.add(session.hostId);
   const n = Math.max(2, people.size);
@@ -812,9 +974,19 @@ async function openSurveyForActivity(surveyId: string) {
   if (surveyId) await db.update(surveys).set({ status: "OPEN" }).where(and(eq(surveys.id, surveyId), eq(surveys.status, "DRAFT")));
 }
 
+// Seed a shuffled speaking order from the people in the room (stored in the activity's config).
+async function seedRound(activityId: string, session: { id: string; hostId: string }) {
+  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED"), eq(sessionParticipants.presentation, false)));
+  const people = new Set(joined.map((j) => j.userId));
+  people.add(session.hostId);
+  const order = shuffle([...people]);
+  const [a] = await db.select({ config: activities.config }).from(activities).where(eq(activities.id, activityId));
+  await db.update(activities).set({ config: { ...(a?.config ?? {}), roundOrder: order, roundIndex: 0 } }).where(eq(activities.id, activityId));
+}
+
 // Randomly split the room into `teamCount` teams (balanced — round-robin over a shuffle).
 async function seedTeams(activityId: string, session: { id: string; hostId: string }, teamCount: number) {
-  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED")));
+  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED"), eq(sessionParticipants.presentation, false)));
   const people = new Set(joined.map((j) => j.userId));
   people.add(session.hostId);
   const order = shuffle([...people]);
@@ -835,7 +1007,7 @@ type ActivityInput = NonNullable<z.infer<typeof startBody>["config"]>;
 // Validate the two pinned players exist and are in the room (host counts). Shared by RPS + board games.
 async function twoPlayersInRoom(c: ActivityInput, session: { id: string; hostId: string }): Promise<{ error: string } | { player1Id: string; player2Id: string }> {
   if (!c.player1Id || !c.player2Id || c.player1Id === c.player2Id) return { error: "need_two_players" };
-  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED")));
+  const joined = await db.select({ userId: sessionParticipants.userId }).from(sessionParticipants).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.state, "JOINED"), eq(sessionParticipants.presentation, false)));
   const set = new Set(joined.map((j) => j.userId));
   set.add(session.hostId);
   if (!set.has(c.player1Id) || !set.has(c.player2Id)) return { error: "players_not_in_room" };
@@ -880,6 +1052,43 @@ async function buildActivityConfig(
   }
   if (type === "FIST") return { config: {} };
   if (type === "POKER") return { config: { deck: POKER_DECK, pokerRevealed: false } };
+  if (type === "RETRO") {
+    const cols = c.retroColumns && c.retroColumns.length >= 2 ? c.retroColumns : ["Start", "Stop", "Continue"];
+    return { config: { retroColumns: cols, anonymous: c.anonymous === true } };
+  }
+  if (type === "CHECKLIST") {
+    if (!c.checklistItems || c.checklistItems.length < 1) return { error: "checklist_empty" };
+    return { config: { checklistItems: c.checklistItems } };
+  }
+  if (type === "TIMER") return { config: { timerSeconds: c.timerSeconds ?? 300 } }; // idle until the host starts it
+  if (type === "ROUNDROBIN") return { config: {} }; // order is seeded from the room right after launch
+  if (type === "SCOREBOARD") {
+    if (!c.scoreboardId) return { error: "no_scoreboard" };
+    const [host] = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, session.hostId));
+    const [sb] = await db.select({ id: scoreboards.id }).from(scoreboards).where(and(eq(scoreboards.id, c.scoreboardId), eq(scoreboards.tenantId, host?.tenantId ?? "")));
+    if (!sb) return { error: "no_scoreboard" };
+    return { config: { scoreboardId: sb.id } };
+  }
+  if (type === "TOURNAMENT") {
+    if (!c.tournamentId) return { error: "no_tournament" };
+    const [host] = await db.select({ tenantId: users.tenantId }).from(users).where(eq(users.id, session.hostId));
+    if (!(await tournamentInTenant(c.tournamentId, host?.tenantId ?? ""))) return { error: "no_tournament" };
+    return { config: { tournamentId: c.tournamentId } };
+  }
+  if (type === "FEEDBACK") {
+    const kind = c.fbKind ?? "SUGGESTION";
+    const scopeKind = c.fbScopeKind ?? "ALL";
+    if (scopeKind === "NODE" && !c.fbScopeId) return { error: "scope_required" };
+    const [host] = await db.select({ tenantId: users.tenantId, role: users.role, nodeId: users.nodeId }).from(users).where(eq(users.id, session.hostId));
+    if (!host) return { error: "not_allowed" };
+    const me = { id: session.hostId, tenantId: host.tenantId, role: host.role, nodeId: host.nodeId };
+    // Suggestions are already public; revealing the private COMPLAINT box to the room needs the manage cap.
+    const ok = kind === "COMPLAINT"
+      ? scopeKind === "ALL" ? await hasScope(me, "suggestion.manage", "ORG") : await can(me, "suggestion.manage", c.fbScopeId ?? undefined)
+      : await canSeeScoped({ tenantId: host.tenantId, scopeKind, scopeId: c.fbScopeId ?? null }, session.hostId, host.tenantId);
+    if (!ok) return { error: "not_allowed" };
+    return { config: { fbKind: kind, fbScopeKind: scopeKind, fbScopeId: c.fbScopeId ?? undefined, fbSpotlight: -1, timerSeconds: c.timerSeconds ?? 120 } };
+  }
   if (type === "DRAW_STRAWS") return { config: {} };
   if (type === "TEAM_SELECT") return { config: { teamCount: c.teamCount ?? 2 } };
   if (type === "SURVEY") {

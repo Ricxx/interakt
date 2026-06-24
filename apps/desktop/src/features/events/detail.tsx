@@ -7,6 +7,7 @@ import {
   type Photo, useAddPhoto, useAddPhotoComment, useAttachList, useContribute, useContributions, useDeletePhoto, useDeletePhotoComment, useEvent, usePhotoComments, usePhotos, useToggleGalleryAnon, useTogglePhotoLike,
 } from "../../lib/events";
 import { useLists } from "../../lib/lists";
+import { useReportContent } from "../../lib/moderation";
 import { uploadImage } from "../../lib/upload";
 import { useTenantSettings } from "../../lib/tenant";
 import { timeAgo } from "../../lib/tasks";
@@ -159,7 +160,14 @@ function AddPhoto({ id }: { id: string }) {
 function PhotoCard({ eventId, p, anon }: { eventId: string; p: Photo; anon: boolean }) {
   const like = useTogglePhotoLike(eventId);
   const del = useDeletePhoto(eventId);
+  const report = useReportContent();
   const [showComments, setShowComments] = useState(false);
+  const doReport = () => {
+    if (report.isSuccess) return;
+    const reason = prompt("Report this photo to moderators? Optionally say why:");
+    if (reason === null) return;
+    report.mutate({ kind: "PHOTO", refId: p.id, reason: reason || undefined });
+  };
   return (
     <Card className="overflow-hidden p-0">
       <div className="relative bg-black/5">
@@ -179,6 +187,9 @@ function PhotoCard({ eventId, p, anon }: { eventId: string; p: Photo; anon: bool
           </button>
           {!anon && p.likers.length > 0 && <span className="text-muted">{p.likers.join(", ")}</span>}
           <button onClick={() => setShowComments((s) => !s)} className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-muted hover:bg-border/40">💬 {p.comments > 0 ? p.comments : "Comment"}</button>
+          <button onClick={doReport} disabled={report.isPending || report.isSuccess} className={`${p.canDelete ? "" : "ml-auto"} text-muted hover:text-rose-600`} title="Report to moderators">
+            {report.isSuccess ? "✓ Reported" : "⚑"}
+          </button>
           {p.canDelete && <button onClick={() => del.mutate(p.id)} className="ml-auto text-muted hover:text-red-600">Remove</button>}
         </div>
         {showComments && <PhotoComments eventId={eventId} photoId={p.id} />}

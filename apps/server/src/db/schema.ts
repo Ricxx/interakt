@@ -9,6 +9,13 @@ export const tenants = pgTable("tenants", {
   timezone: text("timezone").notNull().default("UTC"), // IANA tz; drives how scheduled times (sessions, clue release, matches) render
   usageLogEnabled: boolean("usage_log_enabled").notNull().default(false), // off by default — opt-in oversight (reads as micromanagement)
   profilePicsEnabled: boolean("profile_pics_enabled").notNull().default(true), // institution can turn profile pictures on/off
+  disabledModules: jsonb("disabled_modules").$type<string[]>().notNull().default([]), // optional feature areas the org has hidden from the nav (declutter, not security)
+  brandColor: text("brand_color").notNull().default("blue"), // accent palette key (drives --brand-hue across the UI)
+  brandEmoji: text("brand_emoji"), // optional wordmark emoji shown beside the workspace name in the sidebar
+  brandLogoUrl: text("brand_logo_url"), // optional uploaded logo image (shown instead of the emoji wordmark)
+  welcomeMessage: text("welcome_message"), // optional message shown on the dashboard
+  terms: jsonb("terms").$type<Record<string, string>>().notNull().default({}), // white-label vocabulary overrides (points→"Coins" etc.)
+  footerCredit: boolean("footer_credit").notNull().default(true), // show "© year · version" in the footer
 
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -45,6 +52,8 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash"), // null = no local password (SSO-only / directory-only)
   role: text("role").notNull().default("MEMBER"), // TENANT_ADMIN|NODE_ADMIN|FACILITATOR|MEMBER
   status: text("status").notNull().default("ACTIVE"), // ACTIVE|DISABLED
+  deactivatedAt: timestamp("deactivated_at", { withTimezone: true }), // when offboarded → starts the PII-retention clock
+  erasedAt: timestamp("erased_at", { withTimezone: true }), // when PII was scrubbed (right-to-erasure / retention purge)
   emailVerified: boolean("email_verified").notNull().default(false),
   // 2FA lands here later: totpSecret + a verification step in /login. Not built yet.
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -96,6 +105,7 @@ export const sessionParticipants = pgTable(
     state: text("state").notNull().default("INVITED"),
     sessionRole: text("session_role"), // null = member; COHOST = can drive activities + invite/remove
     accessRevoked: boolean("access_revoked").notNull().default(false), // can no longer see the session/log
+    presentation: boolean("presentation").notNull().default(false), // TV / projector watcher — excluded from random-pick pools
     batchId: uuid("batch_id"), // set when invited as part of a bulk group invite
     invitedAt: timestamp("invited_at").defaultNow().notNull(),
     respondedAt: timestamp("responded_at"),
@@ -136,6 +146,18 @@ export const activities = pgTable("activities", {
     dotBudget?: number; // dot voting — dots each person may spend
     deck?: string[]; // planning poker — the cards available
     pokerRevealed?: boolean; // planning poker — votes revealed to the room
+    retroColumns?: string[]; // retro board — the column titles (e.g. Start / Stop / Continue)
+    checklistItems?: string[]; // checklist / protocol — the items to tick off
+    timerEndsAt?: string; // meeting timer — when the running countdown ends (ISO); absent = not running
+    timerPausedRemaining?: number; // meeting timer — seconds left while paused
+    roundOrder?: string[]; // round-robin — the shuffled speaking order (userIds)
+    roundIndex?: number; // round-robin — whose turn it is (index into roundOrder; == length when done)
+    scoreboardId?: string; // in-session scoreboard — which standings board to show the room
+    tournamentId?: string; // in-session tournament — which bracket to show the room
+    fbKind?: string; // feedback review — SUGGESTION | COMPLAINT box being run
+    fbScopeKind?: string; // feedback review — ALL | NODE (which box)
+    fbScopeId?: string; // feedback review — the node when fbScopeKind is NODE
+    fbSpotlight?: number; // feedback review — index of the item the host is focusing the room on (-1 = none)
     teamCount?: number; // team selector — number of teams
     surveyId?: string; // in-meeting survey — which survey to run
     quizId?: string; // live quiz — which quiz to run
@@ -318,6 +340,37 @@ export const pollVotes = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => ({ uniqVoter: unique().on(t.activityId, t.voterId) }),
+);
+
+// Checklist / protocol run-through — a row exists once an item is ticked (records who + when, for
+// accountability: surgical safety checks, deploy runbooks, month-end close, etc.).
+export const checklistTicks = pgTable(
+  "checklist_ticks",
+  {
+    activityId: uuid("activity_id").notNull().references(() => activities.id),
+    itemIndex: integer("item_index").notNull(),
+    checkedBy: uuid("checked_by").notNull().references(() => users.id),
+    checkedAt: timestamp("checked_at").defaultNow().notNull(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.activityId, t.itemIndex] }) }),
+);
+
+// Retro board — cards in titled columns (Start/Stop/Continue, etc.), upvoted to surface the top points.
+export const retroCards = pgTable("retro_cards", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  activityId: uuid("activity_id").notNull().references(() => activities.id),
+  authorId: uuid("author_id").notNull().references(() => users.id),
+  column: integer("column").notNull(),
+  body: text("body").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+export const retroCardVotes = pgTable(
+  "retro_card_votes",
+  {
+    cardId: uuid("card_id").notNull().references(() => retroCards.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.cardId, t.userId] }) }),
 );
 
 // Planning Poker — agile estimation. Each person picks a card secretly; the host reveals all at once.
@@ -733,6 +786,7 @@ export const eventPhotos = pgTable(
     number: integer("number").notNull(), // unique caption-number within the event
     url: text("url").notNull(),
     caption: text("caption"),
+    hidden: boolean("hidden").notNull().default(false), // hidden by a moderator after a report
     addedBy: uuid("added_by").notNull().references(() => users.id),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -778,11 +832,234 @@ export const marketplaceItems = pgTable("marketplace_items", {
   name: text("name").notNull(),
   description: text("description"),
   icon: text("icon"),
+  image: text("image"), // optional product image (an /api/uploads/… url); shown instead of the emoji icon
   cost: integer("cost").notNull(),
+  stock: integer("stock"), // null = unlimited in stock; a number = limited (decremented on redeem)
+  redemptionInfo: text("redemption_info"), // what happens next after buying — who to contact / how to redeem (tickets, etc.)
   kind: text("kind").notNull().default("PERK"), // PERK (real-world/generic) | PROFILE (grants an equippable augment)
   augment: text("augment"), // for PROFILE items: the value the buyer can equip (emoji / title text / colour token)
   augmentKind: text("augment_kind"), // for PROFILE items: which slot — FLAIR | TITLE | COLOR
   active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Suggestion / complaint box — ANONYMITY-CRITICAL. No user_id is EVER stored on a suggestion: items are
+// forced-anonymous. The submitter keeps a one-time client claim ticket; we store only its sha256 hash, so
+// they can follow up without us ever knowing who they are. Timestamps are COARSE (created_day) by design.
+export const suggestions = pgTable("suggestions", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  scopeKind: text("scope_kind").notNull(), // ALL (org box) | NODE (a department's box)
+  scopeId: uuid("scope_id"),
+  kind: text("kind").notNull().default("SUGGESTION"), // SUGGESTION (public, upvotable) | COMPLAINT (managers only)
+  body: text("body").notNull(),
+  status: text("status").notNull().default("NEW"), // NEW | REVIEWING | PLANNED | DONE | DECLINED
+  category: text("category"), // complaint category (HARASSMENT|PAY|…) — drives routing to the right team
+  hidden: boolean("hidden").notNull().default(false), // hidden by a moderator after a report
+  urgent: boolean("urgent").notNull().default(false), // submitter-flagged safety/harm concern — escalated, still anonymous
+  response: text("response"), // the mandatory reply when an item is planned/done/declined
+  claimHash: text("claim_hash").notNull(), // sha256(client ticket) — proves authorship, carries no identity
+  createdDay: date("created_day").notNull(), // coarse — never a full timestamp (defeats timing correlation)
+  updatedDay: date("updated_day"),
+});
+// Bug reports / feedback from users. Goes to the workspace (server) admin, who can forward it on to
+// the vendor (the product maker). Not anonymous — it's a support channel.
+export const bugReports = pgTable("bug_reports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  reporterId: uuid("reporter_id").notNull().references(() => users.id),
+  kind: text("kind").notNull().default("BUG"), // BUG | IDEA
+  message: text("message").notNull(),
+  page: text("page"), // the route they were on, for context
+  status: text("status").notNull().default("NEW"), // NEW | FORWARDED | CLOSED
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  handledBy: uuid("handled_by").references(() => users.id),
+  handledAt: timestamp("handled_at", { withTimezone: true }),
+});
+
+// Lightweight analytics events — page views (and later interactions) used to compute reach/usage.
+// Deliberately coarse (per-surface, per-day) so it never becomes a heavy event pipeline.
+export const statsEvents = pgTable("stats_events", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  userId: uuid("user_id").references(() => users.id), // null = not attributed
+  surface: text("surface").notNull(), // top-level area viewed, e.g. "dashboard", "sessions"
+  refId: uuid("ref_id"), // optional specific item viewed (a board, survey, shop item…) → per-item reach
+  kind: text("kind").notNull().default("VIEW"), // VIEW | INTERACT | LOGIN | LOGIN_FAIL
+  day: date("day").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Content reports → moderation queue. Anyone can flag a photo or public suggestion; people with
+// content.moderate review and either hide the content or dismiss the report.
+export const contentReports = pgTable("content_reports", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  kind: text("kind").notNull(), // PHOTO | SUGGESTION
+  refId: uuid("ref_id").notNull(), // the reported content's id
+  reporterId: uuid("reporter_id").notNull().references(() => users.id),
+  reason: text("reason"),
+  status: text("status").notNull().default("OPEN"), // OPEN | ACTIONED | DISMISSED
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedBy: uuid("resolved_by").references(() => users.id),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+});
+
+// Editable legal documents (Terms of Service, Privacy Policy) per tenant. Bumping the version on any
+// edit re-prompts everyone to accept on their next login.
+export const legalDocs = pgTable(
+  "legal_docs",
+  {
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    kind: text("kind").notNull(), // TOS | PRIVACY
+    body: text("body").notNull(),
+    version: integer("version").notNull().default(1),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedBy: uuid("updated_by").references(() => users.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.tenantId, t.kind] }) }),
+);
+// The latest doc version each user has accepted (re-prompt when the doc's version is newer).
+export const legalAcceptances = pgTable(
+  "legal_acceptances",
+  {
+    userId: uuid("user_id").notNull().references(() => users.id),
+    kind: text("kind").notNull(),
+    version: integer("version").notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.userId, t.kind] }) }),
+);
+
+// AI configuration — bring-your-own-key, per tenant. The vendor never pays; each org uses its own
+// provider key (stored encrypted at rest). Caps bound token spend. The ONLY place that calls an LLM.
+export const aiSettings = pgTable("ai_settings", {
+  tenantId: uuid("tenant_id").primaryKey().references(() => tenants.id),
+  enabled: boolean("enabled").notNull().default(false),
+  provider: text("provider").notNull().default("anthropic"), // anthropic | openai | gemini
+  model: text("model").notNull().default("claude-haiku-4-5"),
+  apiKeyEnc: text("api_key_enc"), // AES-GCM ciphertext of the org's key — never returned to clients
+  weeklyTokenCap: integer("weekly_token_cap").notNull().default(300000), // 0 = unlimited
+  perUserDailyCap: integer("per_user_daily_cap").notNull().default(30000), // 0 = unlimited
+});
+
+// Append-only usage ledger — one row per AI call. Cost is DERIVED from tokens × the price table
+// (so adjusting prices later re-estimates history). Never stores prompt/response content.
+export const aiUsage = pgTable("ai_usage", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  userId: uuid("user_id").references(() => users.id), // null for scheduled/system calls
+  feature: text("feature").notNull(), // ASSISTANT | INSIGHT | …
+  provider: text("provider").notNull(),
+  model: text("model").notNull(),
+  tokensIn: integer("tokens_in").notNull().default(0),
+  tokensOut: integer("tokens_out").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Data-retention schedule (one row per tenant). Disabled by default — destructive purges never run
+// until an admin opts in. Audit/ledger tables are deliberately NOT auto-purged (append-only integrity).
+export const retentionSettings = pgTable("retention_settings", {
+  tenantId: uuid("tenant_id").primaryKey().references(() => tenants.id),
+  enabled: boolean("enabled").notNull().default(false),
+  complaintsResolvedMonths: integer("complaints_resolved_months").notNull().default(12), // purge resolved suggestions/complaints after N months
+  wellnessRawDays: integer("wellness_raw_days").notNull().default(90), // purge raw wellness check-ins after N days
+  deactivatedPiiDays: integer("deactivated_pii_days").notNull().default(60), // anonymize a disabled member's PII N days after offboarding
+  lastRunAt: timestamp("last_run_at", { withTimezone: true }),
+});
+
+// Complaint routing: per category, which department's managers should handle it. When a complaint is
+// filed under a routed category, its scope is set to that node at submit time → existing manager
+// visibility carries it to the right team. Carries no identity (it's org config, not per-complaint).
+export const complaintRoutes = pgTable(
+  "complaint_routes",
+  {
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    category: text("category").notNull(), // HARASSMENT | PAY | WORKLOAD | MANAGEMENT | FACILITIES | SAFETY | OTHER
+    targetNodeId: uuid("target_node_id").notNull().references(() => orgNodes.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.tenantId, t.category] }) }),
+);
+// "You said → We did" — a public action ledger closing the feedback loop. Leadership records
+// what was actually done in response to feedback; everyone in scope can see it. A living record
+// (status progresses), so it's editable — changes are audited as a privileged action.
+export const actionLedger = pgTable("action_ledger", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  scopeKind: text("scope_kind").notNull(), // ALL (org-wide) | NODE (a department)
+  scopeId: uuid("scope_id"),
+  said: text("said").notNull(), // the feedback / "you said"
+  did: text("did").notNull(), // the action taken / "we did"
+  status: text("status").notNull().default("COMMITTED"), // COMMITTED | IN_PROGRESS | DONE
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+// Broadcasts — leadership announcements to the org or a department, with optional read/ack
+// tracking ("Broadcast & Measure"). The acks table records who acknowledged, so senders see reach.
+export const broadcasts = pgTable("broadcasts", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  scopeKind: text("scope_kind").notNull(), // ALL | NODE
+  scopeId: uuid("scope_id"),
+  title: text("title").notNull(),
+  body: text("body").notNull(),
+  requireAck: boolean("require_ack").notNull().default(false), // pin until each recipient acknowledges
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export const broadcastAcks = pgTable(
+  "broadcast_acks",
+  {
+    broadcastId: uuid("broadcast_id").notNull().references(() => broadcasts.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+    ackedAt: timestamp("acked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.broadcastId, t.userId] }) }),
+);
+
+// Upvotes are an attributed action (anyone may upvote) and reveal nothing about authorship.
+export const suggestionVotes = pgTable(
+  "suggestion_votes",
+  {
+    suggestionId: uuid("suggestion_id").notNull().references(() => suggestions.id),
+    userId: uuid("user_id").notNull().references(() => users.id),
+  },
+  (t) => ({ pk: primaryKey({ columns: [t.suggestionId, t.userId] }) }),
+);
+
+// Retreat scoreboard — a points standings board for real-world games (cornhole, etc.). Solo or team
+// entrants; scorekeepers log points per game; a public QR page shows live standings without login.
+export const scoreboards = pgTable("scoreboards", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  title: text("title").notNull(),
+  mode: text("mode").notNull().default("SOLO"), // SOLO (individuals) | TEAM (named teams)
+  createdBy: uuid("created_by").notNull().references(() => users.id),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export const scoreboardEntrants = pgTable("scoreboard_entrants", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  scoreboardId: uuid("scoreboard_id").notNull().references(() => scoreboards.id),
+  name: text("name").notNull(), // person's name (solo) or team name (team)
+  userId: uuid("user_id").references(() => users.id), // linked person for solo entrants (optional)
+});
+// Retreat groups — people (watchers) who joined a TEAM board and which team they're on. Distinct from
+// entrants: in TEAM mode the entrants ARE the teams (scoring units); watchers are the people in them.
+export const scoreboardWatchers = pgTable("scoreboard_watchers", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  scoreboardId: uuid("scoreboard_id").notNull().references(() => scoreboards.id),
+  name: text("name").notNull(),
+  entrantId: uuid("entrant_id").references(() => scoreboardEntrants.id), // their team (null = unassigned)
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export const scoreboardScores = pgTable("scoreboard_scores", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  scoreboardId: uuid("scoreboard_id").notNull().references(() => scoreboards.id),
+  entrantId: uuid("entrant_id").notNull().references(() => scoreboardEntrants.id),
+  game: text("game").notNull().default(""), // which real-world game these points are from
+  points: integer("points").notNull(),
+  createdBy: uuid("created_by").references(() => users.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -797,7 +1074,19 @@ export const redemptions = pgTable("redemptions", {
   cost: integer("cost").notNull(),
   augment: text("augment"), // snapshot of the granted augment value (so it survives item deletion)
   augmentKind: text("augment_kind"), // snapshot of the augment slot — FLAIR | TITLE | COLOR
+  code: text("code"), // the one-time redeemable code handed to this buyer (Starbucks code etc.), if any
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A pool of one-time redeemable codes for a shop item (gift codes, ticket codes…). Each is handed out
+// once on purchase — availability of a code-based item = how many remain unredeemed.
+export const marketplaceCodes = pgTable("marketplace_codes", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  itemId: uuid("item_id").notNull().references(() => marketplaceItems.id),
+  code: text("code").notNull(),
+  redeemedBy: uuid("redeemed_by").references(() => users.id), // null = still available
+  redeemedAt: timestamp("redeemed_at", { withTimezone: true }),
 });
 
 // Achievements — admin-defined badges earned when a metric crosses a threshold. metric ∈ a fixed
@@ -1115,6 +1404,14 @@ export const listReads = pgTable(
 export const taskReads = pgTable("task_reads", {
   userId: uuid("user_id").primaryKey().references(() => users.id),
   lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+});
+
+// When each user last opened their notifications inbox → drives the unread bell count.
+// The feed itself is DERIVED at read time from existing tables (gifts in points_ledger,
+// recognitions, achievement awards) — no write-everywhere notifications table.
+export const notificationReads = pgTable("notification_reads", {
+  userId: uuid("user_id").primaryKey().references(() => users.id),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 // Meeting resources attached to a session: a link, image, or video everyone can open

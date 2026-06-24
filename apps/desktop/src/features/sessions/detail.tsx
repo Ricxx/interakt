@@ -55,7 +55,8 @@ export function SessionDetailPage() {
   const ended = session.state === "ENDED";
   const scheduled = session.state === "SCHEDULED";
   const schedLabel = session.scheduledAt ? new Date(session.scheduledAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
-  const joinedPeople = participants.filter((p) => p.state === "JOINED").map((p) => ({ userId: p.userId, name: p.name }));
+  // Presentation / TV watchers are in the room but excluded from random-pick pools.
+  const joinedPeople = participants.filter((p) => p.state === "JOINED" && !p.presentation).map((p) => ({ userId: p.userId, name: p.name }));
   // RPS players may include the host, who isn't a participant row.
   const rpsPlayers = [{ userId: session.hostId, name: session.hostName }, ...joinedPeople.filter((p) => p.userId !== session.hostId)];
   const inRoom = isHost || canControl || myState === "JOINED";

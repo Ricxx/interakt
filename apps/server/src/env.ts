@@ -23,6 +23,8 @@ export const env = {
   // Used to build invite links in emails.
   appUrl: process.env.APP_URL ?? "http://localhost:5173",
   emailFrom: process.env.EMAIL_FROM ?? "CES <no-reply@ces.local>",
+  // Where an admin "forward to vendor" sends bug reports. Unset → forwarding just flags it (no email).
+  vendorEmail: process.env.VENDOR_EMAIL,
   // Object storage (MinIO/S3) for uploaded files (avatars, gallery photos). Defaults to the dev compose.
   storage: {
     endPoint: process.env.MINIO_ENDPOINT ?? "127.0.0.1",

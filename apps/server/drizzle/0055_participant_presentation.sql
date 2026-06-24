@@ -1,0 +1,1 @@
+ALTER TABLE "session_participants" ADD COLUMN "presentation" boolean DEFAULT false NOT NULL;

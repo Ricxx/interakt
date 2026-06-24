@@ -42,6 +42,21 @@ import { pointsRoutes } from "./features/points/routes.js";
 import { achievementRoutes } from "./features/achievements/routes.js";
 import { marketRoutes } from "./features/market/routes.js";
 import { uploadRoutes } from "./features/uploads/routes.js";
+import { scoreboardRoutes } from "./features/scoreboard/routes.js";
+import { suggestionRoutes } from "./features/suggestions/routes.js";
+import { notificationsRoutes } from "./features/notifications/routes.js";
+import { directoryRoutes } from "./features/directory/routes.js";
+import { actionRoutes } from "./features/actions/routes.js";
+import { broadcastRoutes } from "./features/broadcasts/routes.js";
+import { highlightsRoutes } from "./features/highlights/routes.js";
+import { retentionRoutes } from "./features/retention/routes.js";
+import { privacyRoutes } from "./features/privacy/routes.js";
+import { moderationRoutes } from "./features/moderation/routes.js";
+import { feedbackReportRoutes } from "./features/feedback-reports/routes.js";
+import { statsRoutes } from "./features/stats/routes.js";
+import { aiRoutes } from "./features/ai/routes.js";
+import { legalRoutes } from "./features/legal/routes.js";
+import { runRetentionAllTenants } from "./features/retention/job.js";
 
 // maxParamLength default is 100; our signed QR upload tokens (/u/:token) are ~150 base64url chars.
 const app = Fastify({ logger: true, maxParamLength: 256 });
@@ -123,6 +138,20 @@ pointsRoutes(app);
 achievementRoutes(app);
 marketRoutes(app);
 uploadRoutes(app);
+scoreboardRoutes(app);
+suggestionRoutes(app);
+notificationsRoutes(app);
+directoryRoutes(app);
+actionRoutes(app);
+broadcastRoutes(app);
+highlightsRoutes(app);
+retentionRoutes(app);
+privacyRoutes(app);
+moderationRoutes(app);
+feedbackReportRoutes(app);
+statsRoutes(app);
+aiRoutes(app);
+legalRoutes(app);
 
 app
   .listen({ port: env.port, host: "0.0.0.0" })
@@ -131,6 +160,15 @@ app
     app.log.error(err);
     process.exit(1);
   });
+
+// Data-retention sweep: run shortly after boot, then once a day. In-process (matches the single-box
+// deploy + the app's other timers); pg-boss is the eventual home once it's wired. Only tenants that
+// have opted in are touched (see runRetentionForTenant). Failures are swallowed per-tenant.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const retentionBoot = setTimeout(() => void runRetentionAllTenants().catch((e) => app.log.error(e)), 30_000);
+const retentionDaily = setInterval(() => void runRetentionAllTenants().catch((e) => app.log.error(e)), DAY_MS);
+retentionBoot.unref?.();
+retentionDaily.unref?.();
 
 // Close the server on shutdown so the port frees immediately — without this, `tsx watch` restarts
 // race on the listener and crash with EADDRINUSE, which looks like "auto-reload stopped working".

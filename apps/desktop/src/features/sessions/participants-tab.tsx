@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import { type InviteBatch, type Participant, useBulkParticipants, useCancelBatch, useCandidates, useEntrantAction, useInviteScope, useParticipantAction, usePassHost, useScopePreview, useSetSessionRole } from "../../lib/sessions";
+import { type InviteBatch, type Participant, useBulkParticipants, useCancelBatch, useCandidates, useEntrantAction, useInviteScope, useParticipantAction, usePassHost, useScopePreview, useSetSessionRole, useTogglePresentation } from "../../lib/sessions";
 import { Button } from "../../ui/button";
 import { Card } from "../../ui/card";
 import { Input } from "../../ui/input";
@@ -180,6 +180,7 @@ function PeopleManager({ sessionId, hostName, isHost, canControl, people }: { se
   const reinvite = useParticipantAction("invite");
   const setRole = useSetSessionRole(sessionId);
   const passHost = usePassHost(sessionId);
+  const togglePresentation = useTogglePresentation(sessionId);
   const revoke = useEntrantAction(sessionId, "revoke");
   const bulk = useBulkParticipants(sessionId);
 
@@ -232,6 +233,7 @@ function PeopleManager({ sessionId, hostName, isHost, canControl, people }: { se
       items.push(p.role === "ACTIVITY_ADMIN" ? { label: "Remove activity admin", onClick: () => setRole.mutate({ userId: p.userId, role: "MEMBER" }) } : { label: "Make activity admin", onClick: () => setRole.mutate({ userId: p.userId, role: "ACTIVITY_ADMIN" }) });
     }
     if (isHost && p.state === "JOINED") items.push({ label: "Pass host", onClick: () => passHost.mutate(p.userId) });
+    if (canControl && p.state === "JOINED") items.push({ label: p.presentation ? "Exit presentation (TV)" : "Presentation mode (TV)", onClick: () => togglePresentation.mutate({ userId: p.userId, on: !p.presentation }) });
     if (canControl && p.state === "INVITED") items.push({ label: "Remind", onClick: () => reinvite.mutate({ sessionId, userId: p.userId }) });
     if (canControl && ["DECLINED", "LEFT", "REMOVED", "MISSED"].includes(p.state)) items.push({ label: "Re-invite", onClick: () => reinvite.mutate({ sessionId, userId: p.userId }) });
     if (canControl && (p.state === "INVITED" || p.state === "JOINED")) items.push({ label: "Remove", danger: true, onClick: () => remove.mutate({ sessionId, userId: p.userId }) });
@@ -317,6 +319,7 @@ function PeopleManager({ sessionId, hostName, isHost, canControl, people }: { se
                           {p.name}
                           {p.node && <span className="text-muted"> · {p.node}</span>}
                           {p.role === "COHOST" && <span className="ml-1 rounded bg-border/60 px-1.5 py-0.5 text-xs text-muted">CO-HOST</span>}
+                          {p.presentation && <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700" title="TV / presentation — excluded from random picks">📺 TV</span>}
                           {p.role === "ACTIVITY_ADMIN" && <span className="ml-1 rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">ACTIVITY ADMIN</span>}
                           {p.accessRevoked && <span className="ml-1 rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-600">revoked</span>}
                           {groupBy !== "status" && <span className="ml-1 text-xs text-muted">· {STATE_LABEL[p.state] ?? p.state.toLowerCase()}</span>}

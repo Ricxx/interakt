@@ -9,7 +9,9 @@
   --border: 214 15% 91%;
   --muted: 215 16% 47%;
   --fg: 222 47% 11%;
-  --primary: 222 65% 45%;
+  /* --brand-hue is set per-tenant at runtime (default 222 = blue); lightness/saturation stay
+     fixed per mode so contrast holds whatever accent an org picks. */
+  --primary: var(--brand-hue, 222) 65% 45%;
   --primary-fg: 0 0% 100%;
 }
 
@@ -20,7 +22,7 @@
   --border: 222 16% 26%;
   --muted: 215 18% 62%;
   --fg: 210 20% 96%;
-  --primary: 222 70% 64%;
+  --primary: var(--brand-hue, 222) 70% 64%;
   --primary-fg: 222 47% 11%;
 }
 

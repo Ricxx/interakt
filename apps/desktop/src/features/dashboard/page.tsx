@@ -5,9 +5,9 @@ import { useMeInvites } from "../../lib/sessions";
 import { useRequests } from "../../lib/requests";
 import { useEvents } from "../../lib/events";
 import { useProfile } from "../../lib/profile";
-import { useTenantSettings } from "../../lib/tenant";
+import { useTenantSettings, useTerms } from "../../lib/tenant";
 import { personalGuidance } from "../../lib/wellness";
-import { usePoints, useCheckin, useLottery, useToggleLeave } from "../../lib/points";
+import { usePoints, useCheckin, useLottery } from "../../lib/points";
 import { badgeOf } from "../../lib/recognition";
 import { Button } from "../../ui/button";
 import { KIND_META, fmtWhen } from "../events/page";
@@ -20,32 +20,44 @@ function CheckinCard() {
   const navigate = useNavigate();
   const { data: p } = usePoints();
   const checkin = useCheckin();
-  const leave = useToggleLeave();
   const lottery = useLottery();
+  const term = useTerms();
   if (!p) return null;
   const prize = checkin.data?.prize;
   const won = lottery.data?.won;
   return (
-    <Card className="mb-6 flex flex-wrap items-center gap-4">
-      <div className="flex items-center gap-2">
-        <span className="text-2xl">🔥</span>
-        <div><div className="text-xl font-semibold text-fg">{p.streak}-day streak</div><div className="text-xs text-muted">{p.balance} points</div></div>
-      </div>
-      {prize && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700">🎁 You won: {prize.label}</span>}
-      {won != null && <span className="rounded-full bg-violet-100 px-2.5 py-1 text-xs font-medium text-violet-700">🎲 Lottery: +{won}</span>}
-      <div className="ml-auto flex items-center gap-3">
-        {!p.lotteryToday && <button onClick={() => lottery.mutate()} disabled={lottery.isPending} className="text-xs text-primary hover:underline">🎲 Daily draw</button>}
-        <button onClick={() => navigate("/calendar")} className="text-xs text-primary hover:underline">View calendar →</button>
-        {p.checkedInToday ? (
-          <span className="text-sm text-emerald-600">✓ Checked in today</span>
+    <div className="mb-6">
+      {/* Top card: streak + points + the daily check-in. */}
+      <Card className="flex flex-wrap items-center gap-4 rounded-b-none">
+        <div className="flex items-center gap-2">
+          <span className="text-2xl">🔥</span>
+          <div><div className="text-xl font-semibold text-fg">{p.streak}-day streak</div><div className="text-xs text-muted">{p.balance} {term("pointsPlural")}</div></div>
+        </div>
+        {prize && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700">🎁 You won: {prize.label}</span>}
+        <div className="ml-auto">
+          {p.checkedInToday ? (
+            <span className="text-sm text-emerald-600">✓ Checked in today</span>
+          ) : (
+            <Button disabled={checkin.isPending} onClick={() => checkin.mutate()}>Daily check-in</Button>
+          )}
+        </div>
+      </Card>
+      {/* Mini attached card: the daily draw + a calendar link. */}
+      <div className="flex flex-wrap items-center gap-3 rounded-b-lg border border-t-0 border-border bg-primary/5 px-5 py-2.5 text-sm">
+        <span className="font-medium text-fg">🎲 Daily draw</span>
+        {won != null ? (
+          <span className="rounded-full bg-violet-100 px-2.5 py-0.5 text-xs font-medium text-violet-700">You won +{won} {term("pointsPlural")}!</span>
+        ) : p.lotteryToday ? (
+          <span className="text-xs text-muted">Come back tomorrow for another spin.</span>
         ) : (
           <>
-            <Button disabled={checkin.isPending} onClick={() => checkin.mutate()}>Daily check-in</Button>
-            <button onClick={() => leave.mutate(undefined)} className="text-xs text-muted hover:underline" title="Mark today as leave so it won't break your streak">On leave today</button>
+            <span className="text-xs text-muted">One free spin a day.</span>
+            <Button variant="subtle" disabled={lottery.isPending} onClick={() => lottery.mutate()}>Spin</Button>
           </>
         )}
+        <button onClick={() => navigate("/calendar")} className="ml-auto text-xs text-primary hover:underline">View calendar →</button>
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -53,7 +65,7 @@ const TRY_OUT = [
   { to: "/sessions", icon: "🎤", label: "Run a session" },
   { to: "/recognition", icon: "🎉", label: "Give a big-up" },
   { to: "/events", icon: "📅", label: "Plan an event" },
-  { to: "/wellness", icon: "💙", label: "Wellness check-in" },
+  { to: "/wellness", icon: "💙", label: "Wellness" },
   { to: "/surveys", icon: "📋", label: "Build a survey" },
   { to: "/quizzes", icon: "🎯", label: "Make a quiz" },
   { to: "/lists", icon: "🗂️", label: "Start a list" },
@@ -96,6 +108,10 @@ export function DashboardPage() {
           </button>
         </div>
       </div>
+
+      {settings?.welcomeMessage && (
+        <Card className="mb-6 border-primary/30 bg-primary/5"><p className="text-sm text-fg">{settings.welcomeMessage}</p></Card>
+      )}
 
       {guidance.rough && (
         <Card className="mb-6 border-amber-300 bg-amber-50/40">

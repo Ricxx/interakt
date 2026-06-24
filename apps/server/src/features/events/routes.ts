@@ -212,7 +212,7 @@ export function eventRoutes(app: FastifyInstance) {
       .select({ id: eventPhotos.id, number: eventPhotos.number, url: eventPhotos.url, caption: eventPhotos.caption, addedBy: eventPhotos.addedBy, byName: adder.displayName, createdAt: eventPhotos.createdAt })
       .from(eventPhotos)
       .innerJoin(adder, eq(adder.id, eventPhotos.addedBy))
-      .where(eq(eventPhotos.eventId, id.data))
+      .where(and(eq(eventPhotos.eventId, id.data), eq(eventPhotos.hidden, false)))
       .orderBy(asc(eventPhotos.number));
     const ids = rows.map((r) => r.id);
     const likeCount = new Map<string, number>(), likedByMe = new Set<string>(), commentCount = new Map<string, number>(), likerIds = new Map<string, string[]>();

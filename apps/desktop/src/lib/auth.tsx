@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 
-export type Me = { id: string; email: string; displayName: string; role: string; avatarUrl: string | null; statusText: string | null; flair: string | null };
+export type Me = { id: string; email: string; displayName: string; role: string; avatarUrl: string | null; statusText: string | null; flair: string | null; nodeId: string | null };
 
 // The current user. `null` (not undefined) once we know they're logged out.
 export function useMe() {
@@ -78,6 +78,7 @@ export type Member = {
   role: string;
   jobTitle: string | null;
   status: string;
+  erasedAt: string | null;
   nodeId: string | null;
   node: string | null;
 };
@@ -116,6 +117,17 @@ export function useMembers() {
     queryKey: ["members"],
     queryFn: () => api<{ members: Member[]; pending: Pending[]; registrationMode: string }>("/api/members"),
   });
+}
+
+// Offboarding / erasure (data-retention). Deactivate is reversible; erase is not.
+export function useMemberLifecycle() {
+  const qc = useQueryClient();
+  const inval = () => qc.invalidateQueries({ queryKey: ["members"] });
+  return {
+    deactivate: useMutation({ mutationFn: (id: string) => api(`/api/members/${id}/deactivate`, { method: "POST" }), onSuccess: inval }),
+    reactivate: useMutation({ mutationFn: (id: string) => api(`/api/members/${id}/reactivate`, { method: "POST" }), onSuccess: inval }),
+    erase: useMutation({ mutationFn: (id: string) => api(`/api/members/${id}/erase`, { method: "POST" }), onSuccess: inval }),
+  };
 }
 
 export function useSetRegistrationMode() {

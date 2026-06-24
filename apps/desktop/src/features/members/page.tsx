@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import { useAssignNode, useInvite, useMembers, useRevokeInvite, useResendInvite, useReviewMember, useSetRegistrationMode } from "../../lib/auth";
+import { useAssignNode, useInvite, useMe, useMemberLifecycle, useMembers, useRevokeInvite, useResendInvite, useReviewMember, useSetRegistrationMode } from "../../lib/auth";
 import { type PermGroup, useMemberGroups, usePermGroups, useToggleMemberGroup } from "../../lib/permissions";
 import { Button } from "../../ui/button";
 import { Card } from "../../ui/card";
@@ -121,6 +121,7 @@ function PendingApprovalCard({ pending }: { pending: { id: string; displayName: 
 
 export function MembersPage() {
   const { data } = useMembers();
+  const { data: me } = useMe();
   const { data: permData } = usePermGroups();
   const allGroups = permData?.groups ?? [];
   const pendingMembers = (data?.members ?? []).filter((m) => m.status === "PENDING");
@@ -187,6 +188,7 @@ export function MembersPage() {
               <th className="pb-2 font-medium">Department</th>
               <th className="pb-2 font-medium">Permission groups</th>
               <th className="pb-2 font-medium">Status</th>
+              <th className="pb-2 font-medium"></th>
             </tr>
           </thead>
           <tbody>
@@ -200,7 +202,8 @@ export function MembersPage() {
                   <DepartmentSelect id={m.id} nodeId={m.nodeId} nodes={nodes} />
                 </td>
                 <td className="py-2"><PermGroupsCell userId={m.id} allGroups={allGroups} /></td>
-                <td className="py-2 text-muted">{m.status}</td>
+                <td className="py-2 text-muted">{m.erasedAt ? "Erased" : m.status}</td>
+                <td className="py-2"><MemberActions id={m.id} status={m.status} erased={!!m.erasedAt} isSelf={m.id === me?.id} /></td>
               </tr>
             ))}
             {data?.pending.map((p) => (
@@ -222,11 +225,33 @@ export function MembersPage() {
                     </button>
                   </span>
                 </td>
+                <td className="py-2"></td>
               </tr>
             ))}
           </tbody>
         </table>
       </Card>
     </div>
+  );
+}
+
+// Offboarding controls for a member row: deactivate (reversible) and erase (right-to-erasure, final).
+function MemberActions({ id, status, erased, isSelf }: { id: string; status: string; erased: boolean; isSelf: boolean }) {
+  const { deactivate, reactivate, erase } = useMemberLifecycle();
+  if (isSelf || erased) return <span className="text-xs text-muted">—</span>;
+  return (
+    <span className="flex items-center gap-2 text-xs">
+      {status === "DISABLED" ? (
+        <button onClick={() => reactivate.mutate(id)} className="text-primary hover:underline">Reactivate</button>
+      ) : (
+        <button onClick={() => deactivate.mutate(id)} className="text-muted hover:text-fg hover:underline">Deactivate</button>
+      )}
+      <button
+        onClick={() => { if (confirm("Erase this person's personal data? This is permanent and cannot be undone. Their activity history stays but is no longer linked to their name/email.")) erase.mutate(id); }}
+        className="text-red-600 hover:underline"
+      >
+        Erase
+      </button>
+    </span>
   );
 }

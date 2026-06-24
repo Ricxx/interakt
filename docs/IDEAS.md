@@ -66,6 +66,26 @@ small slice at a time per the doctrine.
     sum ≤ budget; live totals + leader. Verified 10/10.
   - **Fist of Five** (`FIST`, migration 0049): one-tap 1–5 confidence check; live average + distribution;
     re-vote replaces. Verified 9/9.
+  - **Planning Poker** (`POKER`, migration 0050): blind Fibonacci estimation; host reveals all at once;
+    distribution + consensus flag; re-estimate clears. Verified 13/13.
+  - **Retro Board** (`RETRO`, migration 0051): cards in preset columns (Start/Stop/Continue, etc.), upvote
+    to sort; author/host delete; anonymous mode. Cross-industry review tool. Verified 13/13.
+  - **Checklist / protocol** (`CHECKLIST`, migration 0053): host pastes items (one per line); the room ticks
+    them off live (records who + when); progress bar; host reset. Cross-industry — pre-op, deploy runbooks,
+    month-end close, safety/audit. Verified 10/10.
+  - **Meeting Timer** (`TIMER`, no migration — config jsonb): shared countdown to timebox a topic/speaker;
+    host start/pause/resume/reset; clients tick locally from `endsAt` (no server polling). Verified 11/11.
+  - **Round Robin** (`ROUNDROBIN`, no migration — config jsonb): shuffled go-around order seeded from the
+    room; host Back/Next/Reshuffle, current speaker can pass to themselves. Stand-ups. Verified 10/10.
+  - **In-session Scoreboard** (`SCOREBOARD`): deploy a points board's live standings to the room; host
+    awards points in-session by room roster / name. Verified 5/5 + 6/6.
+  - **In-session Tournament** (`TOURNAMENT`): watch a bracket live in the room; results reported on the
+    full Tournaments page reflect live. Verified 6/6.
+- **Retreat mode ✅** — scoreboards (solo/team, per-game), scan-to-join + TV view-only QR, groups+self-pick+
+  host roster, TV/presentation watcher excluded from random-pick pools. See `memory/scoreboard.md`.
+- **Activity explainers ✅ BUILT.** Accessible `?` info icon (`ui/info-tip.tsx`) with a centralized
+  `ACTIVITY_HELP` map (blurb + 2–3 steps per type) shown on every launcher card **and** once on the running
+  activity — so anyone can self-serve "how do I use this" and cut down questions.
 - **Mini questions / fun facts / favorites** — snack, candy, music, movie, movie-type, etc.
   Icebreaker variant; bank of prompts; per-person answers shown. Low risk, high charm.
 - **Mentimeter-style + Word cloud** — open-text submissions, sized by frequency, live. (In IDEAS above.)

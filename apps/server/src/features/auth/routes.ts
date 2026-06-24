@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, count, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { passwordResets, tenants, users } from "../../db/schema.js";
+import { passwordResets, tenants, users, statsEvents } from "../../db/schema.js";
 import { hashPassword, verifyPassword } from "../../lib/password.js";
 import { sendEmail } from "../../lib/email.js";
 import { recordAudit } from "../../lib/audit.js";
@@ -29,8 +29,8 @@ const resetBody = z.object({ token: z.string().min(1), password: z.string().min(
 
 const RESET_TTL_MS = 60 * 60 * 1000; // 1h
 
-function publicUser(u: { id: string; email: string; displayName: string; role: string; avatarUrl?: string | null; statusText?: string | null; flair?: string | null }) {
-  return { id: u.id, email: u.email, displayName: u.displayName, role: u.role, avatarUrl: u.avatarUrl ?? null, statusText: u.statusText ?? null, flair: u.flair ?? null };
+function publicUser(u: { id: string; email: string; displayName: string; role: string; avatarUrl?: string | null; statusText?: string | null; flair?: string | null; nodeId?: string | null }) {
+  return { id: u.id, email: u.email, displayName: u.displayName, role: u.role, avatarUrl: u.avatarUrl ?? null, statusText: u.statusText ?? null, flair: u.flair ?? null, nodeId: u.nodeId ?? null };
 }
 
 export function authRoutes(app: FastifyInstance) {
@@ -92,6 +92,7 @@ export function authRoutes(app: FastifyInstance) {
     return { user: publicUser(user) };
   });
 
+  const loginDay = () => new Date().toISOString().slice(0, 10);
   app.post("/api/auth/login", authLimit, async (req, reply) => {
     const parsed = loginBody.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: "invalid_input" });
@@ -105,7 +106,12 @@ export function authRoutes(app: FastifyInstance) {
 
     // One generic error for every failure — never reveal whether the email exists.
     const pwOk = user && user.passwordHash ? await verifyPassword(password, user.passwordHash) : false;
-    if (!user || !pwOk) return reply.code(401).send({ error: "invalid_credentials" });
+    if (!user || !pwOk) {
+      // Record the failed attempt for login-security stats — only when a tenant is resolvable (known
+      // email); unknown emails stay untracked. No password is ever stored.
+      if (user) await db.insert(statsEvents).values({ tenantId: user.tenantId, userId: null, surface: "login", kind: "LOGIN_FAIL", day: loginDay() }).catch(() => {});
+      return reply.code(401).send({ error: "invalid_credentials" });
+    }
     // Correct password but not yet approved → tell them so (they just registered, no info leak).
     if (user.status === "PENDING") return reply.code(403).send({ error: "pending_approval" });
     if (user.status !== "ACTIVE") return reply.code(401).send({ error: "invalid_credentials" }); // disabled
@@ -113,6 +119,7 @@ export function authRoutes(app: FastifyInstance) {
     // TODO: 2FA — if the user has a TOTP secret, require a verified code here before
     // calling setSession. The login form would then show a second step.
 
+    await db.insert(statsEvents).values({ tenantId: user.tenantId, userId: user.id, surface: "login", kind: "LOGIN", day: loginDay() }).catch(() => {});
     setSession(reply, user.id);
     return { user: publicUser(user) };
   });

@@ -3,9 +3,10 @@ import { randomInt } from "node:crypto";
 import { z } from "zod";
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { db } from "../../db/client.js";
-import { pointsLedger, pointsLeaveDays, checkinRewards } from "../../db/schema.js";
+import { pointsLedger, pointsLeaveDays, checkinRewards, users } from "../../db/schema.js";
 import { requireAuth } from "../../auth.js";
 import { can } from "../../lib/capabilities.js";
+import { recordAudit } from "../../lib/audit.js";
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 const today = () => ymd(new Date());
@@ -28,6 +29,26 @@ export function pointsRoutes(app: FastifyInstance) {
     while ((checkinDays.has(d) || leaveDays.has(d)) && guard++ < 3650) { if (checkinDays.has(d)) streak++; d = prevDay(d); }
     return streak;
   };
+
+  // Gift some of your own points to a colleague — a zero-sum transfer (no inflation); both ledgers record it.
+  app.post("/api/points/gift", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ toUserId: z.string().uuid(), amount: z.number().int().min(1).max(1000), note: z.string().trim().max(120).optional() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser!;
+    if (body.data.toUserId === me.id) return reply.code(400).send({ error: "cannot_gift_self" });
+    const [to] = await db.select({ id: users.id, name: users.displayName }).from(users).where(and(eq(users.id, body.data.toUserId), eq(users.tenantId, me.tenantId), eq(users.status, "ACTIVE")));
+    if (!to) return reply.code(404).send({ error: "not_found" });
+    const { balance } = await load(me.id);
+    if (balance < body.data.amount) return reply.code(400).send({ error: "insufficient_points", balance });
+    const t = today();
+    const note = body.data.note?.trim();
+    // Append-only: debit me, credit them (one transfer, two rows).
+    await db.insert(pointsLedger).values([
+      { tenantId: me.tenantId, userId: me.id, delta: -body.data.amount, reason: `Gift to ${to.name}${note ? `: ${note}` : ""}`, createdDay: t },
+      { tenantId: me.tenantId, userId: to.id, delta: body.data.amount, reason: `Gift from ${me.displayName}${note ? `: ${note}` : ""}`, createdDay: t },
+    ]);
+    return { ok: true, balance: balance - body.data.amount };
+  });
 
   app.get("/api/points/me", { preHandler: requireAuth }, async (req) => {
     const me = req.currentUser!;
@@ -103,16 +124,38 @@ export function pointsRoutes(app: FastifyInstance) {
     return { won, balance, playedToday: true };
   });
 
-  // Flag/unflag a day as leave/sick so it doesn't break the streak (toggle; defaults to today).
-  app.post("/api/points/leave", { preHandler: requireAuth }, async (req, reply) => {
-    const body = z.object({ day: z.string().date().optional() }).safeParse(req.body ?? {});
-    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+  // Admin streak fix-up: protect (or un-protect) a day for someone who was genuinely away, so a missed
+  // check-in doesn't break their streak. Members can no longer self-mark leave — this is the sanctioned
+  // way to "fix it back", gated by reward.manage (admins bypass) and audited.
+  app.post<{ Params: { userId: string } }>("/api/points/leave-for/:userId", { preHandler: requireAuth }, async (req, reply) => {
+    const uid = z.string().uuid().safeParse(req.params.userId);
+    const body = z.object({ day: z.string().date(), on: z.boolean().optional() }).safeParse(req.body);
+    if (!uid.success || !body.success) return reply.code(400).send({ error: "invalid_input" });
     const me = req.currentUser!;
-    const day = body.data.day ?? today();
-    const where = and(eq(pointsLeaveDays.userId, me.id), eq(pointsLeaveDays.day, day));
+    if (!(await can(me, "reward.manage"))) return reply.code(403).send({ error: "forbidden" });
+    const [u] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, uid.data), eq(users.tenantId, me.tenantId)));
+    if (!u) return reply.code(404).send({ error: "not_found" });
+    const where = and(eq(pointsLeaveDays.userId, u.id), eq(pointsLeaveDays.day, body.data.day));
     const [existing] = await db.select().from(pointsLeaveDays).where(where);
-    if (existing) await db.delete(pointsLeaveDays).where(where);
-    else await db.insert(pointsLeaveDays).values({ userId: me.id, day });
-    return { onLeave: !existing, day };
+    const on = body.data.on ?? !existing; // explicit on/off, else toggle
+    if (on && !existing) await db.insert(pointsLeaveDays).values({ userId: u.id, day: body.data.day });
+    if (!on && existing) await db.delete(pointsLeaveDays).where(where);
+    await recordAudit({ action: "points.leave_set", tenantId: me.tenantId, actorId: me.id, meta: { userId: u.id, day: body.data.day, on } });
+    return { onLeave: on, day: body.data.day };
+  });
+
+  // The streak ending today for an arbitrary member (admins use this to see whom to fix up).
+  app.get<{ Params: { userId: string } }>("/api/points/streak/:userId", { preHandler: requireAuth }, async (req, reply) => {
+    const uid = z.string().uuid().safeParse(req.params.userId);
+    if (!uid.success) return reply.code(400).send({ error: "invalid_input" });
+    const me = req.currentUser!;
+    if (!(await can(me, "reward.manage"))) return reply.code(403).send({ error: "forbidden" });
+    const [u] = await db.select({ id: users.id }).from(users).where(and(eq(users.id, uid.data), eq(users.tenantId, me.tenantId)));
+    if (!u) return reply.code(404).send({ error: "not_found" });
+    const { checkinDays, leaveDays } = await load(u.id);
+    const t = today();
+    const streak = streakEndingAt(checkinDays.has(t) ? t : prevDay(t), checkinDays, leaveDays);
+    const leave = [...leaveDays].sort().reverse().slice(0, 30);
+    return { streak, checkedInToday: checkinDays.has(t), leaveDays: leave };
   });
 }

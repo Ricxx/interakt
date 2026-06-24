@@ -14,6 +14,18 @@ import { QnaView } from "./qna";
 import { DotVoteView } from "./dot-vote";
 import { FistOfFiveView } from "./fist-of-five";
 import { PokerView } from "./poker";
+import { RetroView } from "./retro";
+import { ChecklistView } from "./checklist";
+import { TimerView } from "./timer";
+import { RoundRobinView } from "./roundrobin";
+import { ScoreboardActivityView } from "./scoreboard-activity";
+import { TournamentActivityView } from "./tournament-activity";
+import { FeedbackView } from "./feedback";
+import { useScoreboards } from "../../lib/scoreboard";
+import { useTournaments } from "../../lib/tournaments";
+import { useOrgNodes } from "../../lib/recognition";
+import { ACTIVITY_HELP } from "./activity-help";
+import { InfoTip } from "../../ui/info-tip";
 import { DrawStrawsView } from "./draw-straws";
 import { TeamSelectView } from "./team-select";
 import { SurveyActivityView } from "./survey-activity";
@@ -43,6 +55,13 @@ export const CATALOG = [
   { type: "DOT_VOTE", name: "Dot Voting", icon: "🔵", desc: "Prioritize: everyone spends a budget of dots across options." },
   { type: "FIST", name: "Fist of Five", icon: "✋", desc: "Quick 1–5 confidence check; live average + spread." },
   { type: "POKER", name: "Planning Poker", icon: "🃏", desc: "Estimate together — pick cards hidden, reveal at once." },
+  { type: "RETRO", name: "Retro Board", icon: "🔄", desc: "Reflect in columns (Start/Stop/Continue); add cards, upvote." },
+  { type: "CHECKLIST", name: "Checklist", icon: "✅", desc: "Run a protocol/runbook live — tick items off together; tracks who." },
+  { type: "TIMER", name: "Timer", icon: "⏱️", desc: "Timebox a topic or speaker — a shared countdown the room can see." },
+  { type: "ROUNDROBIN", name: "Round Robin", icon: "🔁", desc: "Fair go-around — a shuffled turn order for stand-ups; pass to the next person." },
+  { type: "SCOREBOARD", name: "Scoreboard", icon: "🏆", desc: "Show a points scoreboard's live standings to the room (retreats, field day)." },
+  { type: "TOURNAMENT", name: "Tournament", icon: "🥊", desc: "Watch a tournament bracket live in the room; report results as you go." },
+  { type: "FEEDBACK", name: "Feedback Review", icon: "🗳️", desc: "Open the anonymous suggestion/complaint box; timed vote sorts the top issues." },
   { type: "WORDCLOUD", name: "Word Cloud", icon: "☁️", desc: "Everyone submits words; they grow by how often they're said." },
   { type: "DRAW_STRAWS", name: "Draw Straws", icon: "🥢", desc: "Everyone draws a straw; shortest is picked. Ranked live." },
   { type: "TEAM_SELECT", name: "Team Selector", icon: "👥", desc: "Split the room into teams — random, then nudge as needed." },
@@ -64,6 +83,11 @@ export function ActivityPanel({ sessionId, canControl, activity, joined, rpsPlay
   }
   return (
     <>
+      {ACTIVITY_HELP[activity.type] && (
+        <div className="mb-1 flex items-center justify-end gap-1 text-xs text-muted">
+          How this works <InfoTip label={activity.title} help={ACTIVITY_HELP[activity.type]} />
+        </div>
+      )}
       {activity.type === "NOMINATION" ? (
         <NominationView sessionId={sessionId} canControl={canControl} activity={activity} joined={joined} />
       ) : activity.type === "BRAINSTORM" ? (
@@ -90,6 +114,20 @@ export function ActivityPanel({ sessionId, canControl, activity, joined, rpsPlay
         <FistOfFiveView sessionId={sessionId} canControl={canControl} activity={activity} />
       ) : activity.type === "POKER" ? (
         <PokerView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "RETRO" ? (
+        <RetroView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "CHECKLIST" ? (
+        <ChecklistView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "TIMER" ? (
+        <TimerView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "ROUNDROBIN" ? (
+        <RoundRobinView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "SCOREBOARD" ? (
+        <ScoreboardActivityView sessionId={sessionId} canControl={canControl} activity={activity} joined={joined} />
+      ) : activity.type === "TOURNAMENT" ? (
+        <TournamentActivityView sessionId={sessionId} canControl={canControl} activity={activity} />
+      ) : activity.type === "FEEDBACK" ? (
+        <FeedbackView sessionId={sessionId} canControl={canControl} activity={activity} />
       ) : activity.type === "DRAW_STRAWS" ? (
         <DrawStrawsView sessionId={sessionId} activity={activity} />
       ) : activity.type === "TEAM_SELECT" ? (
@@ -106,6 +144,14 @@ export function ActivityPanel({ sessionId, canControl, activity, joined, rpsPlay
     </>
   );
 }
+
+// Retro column layouts — preset so it suits any team/industry's review style.
+const RETRO_PRESETS = [
+  { label: "Start / Stop / Continue", cols: ["Start", "Stop", "Continue"] },
+  { label: "Went well / To improve / Actions", cols: ["Went well", "To improve", "Action items"] },
+  { label: "Keep / Drop / Add", cols: ["Keep", "Drop", "Add"] },
+  { label: "Mad / Sad / Glad", cols: ["Mad", "Sad", "Glad"] },
+];
 
 const ICON = Object.fromEntries(CATALOG.map((c) => [c.type, c.icon]));
 const BOARD_GAMES = ["TIC_TAC_TOE", "CONNECT_FOUR", "CHECKERS"]; // 1v1 like RPS: pick two players, no drafts
@@ -200,12 +246,28 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
   const [qnaAnon, setQnaAnon] = useState(false);
   const [dotOptions, setDotOptions] = useState<string[]>(["", ""]);
   const [dotBudget, setDotBudget] = useState(5);
+  const [retroPreset, setRetroPreset] = useState(0); // index into RETRO_PRESETS
+  const [retroAnon, setRetroAnon] = useState(false);
+  const [checklistText, setChecklistText] = useState(""); // one item per line
+  const checklistItems = checklistText.split("\n").map((l) => l.trim()).filter(Boolean);
+  const [timerSecs, setTimerSecs] = useState(300);
   const [surveyId, setSurveyId] = useState("");
   const { data: surveyData } = useSurveys();
   const mySurveys = surveyData?.surveys ?? [];
   const [quizId, setQuizId] = useState("");
   const { data: quizData } = useQuizzes();
   const myQuizzes = quizData?.quizzes ?? [];
+  const [scoreboardId, setScoreboardId] = useState("");
+  const { data: scoreboardData } = useScoreboards();
+  const myScoreboards = scoreboardData?.scoreboards ?? [];
+  const [tournamentId, setTournamentId] = useState("");
+  const { data: tournamentData } = useTournaments();
+  const myTournaments = tournamentData?.tournaments ?? [];
+  const [fbKind, setFbKind] = useState<"SUGGESTION" | "COMPLAINT">("SUGGESTION");
+  const [fbScopeKind, setFbScopeKind] = useState<"ALL" | "NODE">("ALL");
+  const [fbScopeId, setFbScopeId] = useState("");
+  const [fbTimer, setFbTimer] = useState(120);
+  const { data: nodeData } = useOrgNodes();
   const [draftAgenda, setDraftAgenda] = useState(""); // agenda item a draft is planned under
 
   function add(type: string, defaultName: string, draft = false) {
@@ -227,14 +289,26 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
                   ? { anonymous: qnaAnon }
                 : type === "DOT_VOTE"
                   ? { dotOptions: dotOptions.map((o) => o.trim()).filter(Boolean), dotBudget }
+                : type === "RETRO"
+                  ? { retroColumns: RETRO_PRESETS[retroPreset].cols, anonymous: retroAnon }
+                : type === "CHECKLIST"
+                  ? { checklistItems }
+                : type === "TIMER"
+                  ? { timerSeconds: timerSecs }
                 : type === "TEAM_SELECT"
                   ? { teamCount }
                   : type === "SURVEY"
                     ? { surveyId }
                     : type === "QUIZ"
                       ? { quizId }
-                      : type === "WORDCLOUD" || type === "DRAW_STRAWS" || type === "FIST" || type === "POKER"
-                        ? {} // word cloud prompt = title; draw straws / fist / poker need no config
+                    : type === "SCOREBOARD"
+                      ? { scoreboardId }
+                    : type === "TOURNAMENT"
+                      ? { tournamentId }
+                    : type === "FEEDBACK"
+                      ? { fbKind, fbScopeKind, fbScopeId: fbScopeKind === "NODE" ? fbScopeId : undefined, timerSeconds: fbTimer }
+                      : type === "WORDCLOUD" || type === "DRAW_STRAWS" || type === "FIST" || type === "POKER" || type === "ROUNDROBIN"
+                        ? {} // prompt = title / seeded from the room — no launch config
                         : { description: desc.trim() || undefined }; // BRAINSTORM
     start.mutate({ type, title: t, config, draft, agendaItemId: draft && draftAgenda ? draftAgenda : undefined }, { onSuccess: () => { setOpen(false); setTitle(""); setDesc(""); setP1(""); setP2(""); setAgrText(""); setPollQuestion(""); setDraftAgenda(""); } });
   }
@@ -274,7 +348,7 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
           <div key={c.type} className="flex items-start gap-3 rounded-lg border border-border p-3">
             <span className="text-2xl">{c.icon}</span>
             <div className="flex-1">
-              <div className="text-sm font-medium">{c.name}</div>
+              <div className="flex items-center gap-1.5 text-sm font-medium">{c.name} <InfoTip label={c.name} help={ACTIVITY_HELP[c.type]} /></div>
               <div className="text-xs text-muted">{c.desc}</div>
               {c.type === "RANDOMIZER" && (
                 <div className="mt-1 flex flex-col gap-1 text-xs text-muted">
@@ -367,6 +441,32 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
               {c.type === "POKER" && (
                 <div className="mt-1 text-xs text-muted">The title is what you're estimating (e.g. “Story: search filters”). Cards: 1, 2, 3, 5, 8, 13, 21, ?.</div>
               )}
+              {c.type === "CHECKLIST" && (
+                <div className="mt-1 text-xs text-muted">
+                  <textarea value={checklistText} onChange={(e) => setChecklistText(e.target.value)} rows={4} placeholder={"One item per line, e.g.\nConfirm patient identity\nMark surgical site\nAntibiotics given"} className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm" />
+                  <span>{checklistItems.length} item{checklistItems.length === 1 ? "" : "s"}</span>
+                </div>
+              )}
+              {c.type === "TIMER" && (
+                <label className="mt-1 flex items-center gap-1 text-xs text-muted">
+                  starting duration
+                  <select value={timerSecs} onChange={(e) => setTimerSecs(Number(e.target.value))} className="rounded border border-border bg-surface px-1 py-0.5">
+                    {[[60, "1m"], [120, "2m"], [300, "5m"], [600, "10m"], [900, "15m"], [1800, "30m"]].map(([s, l]) => <option key={s} value={s}>{l}</option>)}
+                  </select>
+                  <span>(host can change it live)</span>
+                </label>
+              )}
+              {c.type === "RETRO" && (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+                  <select value={retroPreset} onChange={(e) => setRetroPreset(Number(e.target.value))} className="rounded border border-border bg-surface px-1 py-0.5">
+                    {RETRO_PRESETS.map((p, i) => <option key={i} value={i}>{p.label}</option>)}
+                  </select>
+                  <label className="flex items-center gap-1">
+                    <input type="checkbox" checked={retroAnon} onChange={(e) => setRetroAnon(e.target.checked)} />
+                    anonymous
+                  </label>
+                </div>
+              )}
               {c.type === "QNA" && (
                 <label className="mt-1 flex items-center gap-1 text-xs text-muted">
                   <input type="checkbox" checked={qnaAnon} onChange={(e) => setQnaAnon(e.target.checked)} />
@@ -418,6 +518,47 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
                   {myQuizzes.length === 0 && <span>— build one under Quizzes first</span>}
                 </label>
               )}
+              {c.type === "SCOREBOARD" && (
+                <label className="mt-1 flex items-center gap-2 text-xs text-muted">
+                  Scoreboard
+                  <select value={scoreboardId} onChange={(e) => setScoreboardId(e.target.value)} className="rounded border border-border bg-surface px-1 py-0.5">
+                    <option value="">Choose a scoreboard…</option>
+                    {myScoreboards.map((sb) => <option key={sb.id} value={sb.id}>{sb.title} ({sb.mode === "TEAM" ? "teams" : "solo"})</option>)}
+                  </select>
+                  {myScoreboards.length === 0 && <span>— create one under Scoreboards first</span>}
+                </label>
+              )}
+              {c.type === "TOURNAMENT" && (
+                <label className="mt-1 flex items-center gap-2 text-xs text-muted">
+                  Tournament
+                  <select value={tournamentId} onChange={(e) => setTournamentId(e.target.value)} className="rounded border border-border bg-surface px-1 py-0.5">
+                    <option value="">Choose a tournament…</option>
+                    {myTournaments.map((tr) => <option key={tr.id} value={tr.id}>{tr.title} ({tr.status.toLowerCase()})</option>)}
+                  </select>
+                  {myTournaments.length === 0 && <span>— create one under Tournaments first</span>}
+                </label>
+              )}
+              {c.type === "FEEDBACK" && (
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted">
+                  <select value={fbKind} onChange={(e) => setFbKind(e.target.value as "SUGGESTION" | "COMPLAINT")} className="rounded border border-border bg-surface px-1 py-0.5">
+                    <option value="SUGGESTION">Suggestions</option><option value="COMPLAINT">Complaints (managers)</option>
+                  </select>
+                  <select value={fbScopeKind} onChange={(e) => { setFbScopeKind(e.target.value as "ALL" | "NODE"); setFbScopeId(""); }} className="rounded border border-border bg-surface px-1 py-0.5">
+                    <option value="ALL">Org-wide box</option><option value="NODE">A department's box</option>
+                  </select>
+                  {fbScopeKind === "NODE" && (
+                    <select value={fbScopeId} onChange={(e) => setFbScopeId(e.target.value)} className="rounded border border-border bg-surface px-1 py-0.5">
+                      <option value="">Which department?</option>
+                      {(nodeData?.nodes ?? []).filter((n) => n.nodeType !== "ORG").map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+                    </select>
+                  )}
+                  <label className="flex items-center gap-1">vote
+                    <select value={fbTimer} onChange={(e) => setFbTimer(Number(e.target.value))} className="rounded border border-border bg-surface px-1 py-0.5">
+                      {[[60, "1m"], [120, "2m"], [180, "3m"], [300, "5m"]].map(([s, l]) => <option key={s} value={s}>{l}</option>)}
+                    </select>
+                  </label>
+                </div>
+              )}
               {c.type === "RPS" && (
                 <div className="mt-1 space-y-1 text-xs text-muted">
                   <div className="flex gap-1">
@@ -456,10 +597,10 @@ function AddActivity({ sessionId, joined, rpsPlayers, allowedTypes, agenda }: { 
               )}
             </div>
             <div className="flex flex-col gap-1">
-              <Button onClick={() => add(c.type, c.name)} disabled={start.isPending || ((c.type === "RPS" || BOARD_GAMES.includes(c.type)) && (!p1 || !p2)) || (c.type === "POLL" && pollIncomplete) || (c.type === "DOT_VOTE" && dotIncomplete) || (c.type === "SURVEY" && !surveyId) || (c.type === "QUIZ" && !quizId)}>Start</Button>
+              <Button onClick={() => add(c.type, c.name)} disabled={start.isPending || ((c.type === "RPS" || BOARD_GAMES.includes(c.type)) && (!p1 || !p2)) || (c.type === "POLL" && pollIncomplete) || (c.type === "DOT_VOTE" && dotIncomplete) || (c.type === "CHECKLIST" && checklistItems.length === 0) || (c.type === "SURVEY" && !surveyId) || (c.type === "QUIZ" && !quizId) || (c.type === "SCOREBOARD" && !scoreboardId) || (c.type === "TOURNAMENT" && !tournamentId) || (c.type === "FEEDBACK" && fbScopeKind === "NODE" && !fbScopeId)}>Start</Button>
               {/* RPS + board games can't be pre-planned (they need players live in the room). */}
               {allowedTypes === null && c.type !== "RPS" && !BOARD_GAMES.includes(c.type) && (
-                <button onClick={() => add(c.type, c.name, true)} disabled={start.isPending || (c.type === "POLL" && pollIncomplete) || (c.type === "DOT_VOTE" && dotIncomplete) || (c.type === "SURVEY" && !surveyId) || (c.type === "QUIZ" && !quizId)} className="text-xs text-muted hover:text-fg disabled:opacity-40">Save as draft</button>
+                <button onClick={() => add(c.type, c.name, true)} disabled={start.isPending || (c.type === "POLL" && pollIncomplete) || (c.type === "DOT_VOTE" && dotIncomplete) || (c.type === "CHECKLIST" && checklistItems.length === 0) || (c.type === "SURVEY" && !surveyId) || (c.type === "QUIZ" && !quizId) || (c.type === "SCOREBOARD" && !scoreboardId) || (c.type === "TOURNAMENT" && !tournamentId) || (c.type === "FEEDBACK" && fbScopeKind === "NODE" && !fbScopeId)} className="text-xs text-muted hover:text-fg disabled:opacity-40">Save as draft</button>
               )}
             </div>
           </div>

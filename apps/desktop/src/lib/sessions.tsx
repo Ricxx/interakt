@@ -9,7 +9,7 @@ export function useHistory() {
     queryFn: () => api<{ history: { id: string; title: string; joinCode: string | null; hostName: string; endedAt: string | null; iHosted: boolean }[] }>("/api/sessions/history"),
   });
 }
-export type Participant = { userId: string; name: string; node: string | null; nodeId: string | null; state: string; role: string | null; accessRevoked: boolean };
+export type Participant = { userId: string; name: string; node: string | null; nodeId: string | null; state: string; role: string | null; accessRevoked: boolean; presentation: boolean };
 export type Candidate = { id: string; name: string; node: string | null };
 export type Pick = { userId: string; name: string; manual: boolean };
 export type Tally = { userId: string; name: string; count: number; voters: string[] };
@@ -42,6 +42,13 @@ export type CurrentActivity = {
   dot?: DotVote;
   fist?: Fist;
   poker?: Poker;
+  retro?: Retro;
+  checklist?: Checklist;
+  timer?: Timer;
+  round?: Round;
+  scoreboard?: ScoreboardActivity | null;
+  tournament?: TournamentActivity | null;
+  feedback?: Feedback;
   straws?: Straws;
   teams?: Teams;
   survey?: SurveyActivity;
@@ -97,6 +104,19 @@ export type DotOption = { index: number; label: string; dots: number; mine: numb
 export type DotVote = { question: string; budget: number; voterCount: number; totalDots: number; myUsed: number; myRemaining: number; options: DotOption[] };
 export type Fist = { prompt: string; scale: number; count: number; average: number; distribution: { value: number; count: number }[]; myVote: number | null };
 export type Poker = { prompt: string; deck: string[]; revealed: boolean; votedCount: number; myCard: string | null; voters: { name: string; card: string | null }[]; distribution: { card: string; count: number }[] | null; consensus: boolean };
+export type RetroCard = { id: string; body: string; mine: boolean; canDelete: boolean; authorName: string | null; votes: number; myVote: boolean };
+export type RetroColumn = { index: number; title: string; cards: RetroCard[] };
+export type Retro = { anonymous: boolean; canModerate: boolean; columns: RetroColumn[] };
+export type ChecklistItem = { index: number; label: string; checked: boolean; byName: string | null; at: string | null };
+export type Checklist = { items: ChecklistItem[]; done: number; total: number };
+export type Timer = { seconds: number; endsAt: string | null; pausedRemaining: number | null; running: boolean };
+export type RoundItem = { name: string; done: boolean; current: boolean; mine: boolean };
+export type Round = { items: RoundItem[]; index: number; total: number; currentName: string | null; currentMine: boolean; finished: boolean };
+export type ScoreboardActivity = { id: string; title: string; mode: string; games: string[]; standings: { id: string; name: string; total: number; perGame: Record<string, number>; rank: number }[] };
+export type TournamentBracketMatch = { id: string; slot: number; p1: string | null; p2: string | null; winner: string | null; winnerId: string | null };
+export type TournamentActivity = { id: string; title: string; gameLabel: string | null; status: string; rounds: { round: number; matches: TournamentBracketMatch[] }[]; champion: string | null };
+export type FeedbackItem = { id: string; body: string; status: string; votes: number; myVote: boolean };
+export type Feedback = { kind: string; scope: string; items: FeedbackItem[]; total: number; spotlight: number; timer: { seconds: number; endsAt: string | null; running: boolean } };
 export type Straws = {
   straws: { idx: number; picked: boolean; pickerName: string | null; length: number | null }[];
   total: number;
@@ -515,6 +535,69 @@ export function usePokerReveal(sessionId: string, activityId: string) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
   });
 }
+export function useRetroAddCard(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { column: number; body: string }) => api(`/api/activities/${activityId}/retro/card`, { method: "POST", body: JSON.stringify(v) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useRetroVote(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (cardId: string) => api(`/api/activities/${activityId}/retro/card/${cardId}/vote`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useRetroDeleteCard(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (cardId: string) => api(`/api/activities/${activityId}/retro/card/${cardId}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useChecklistToggle(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (index: number) => api(`/api/activities/${activityId}/checklist/toggle`, { method: "POST", body: JSON.stringify({ index }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useChecklistReset(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api(`/api/activities/${activityId}/checklist/reset`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useTimerAction(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { action: "start" | "pause" | "resume" | "reset"; seconds?: number }) => api(`/api/activities/${activityId}/timer`, { method: "POST", body: JSON.stringify(v) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useRoundAction(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (action: "next" | "prev" | "restart") => api(`/api/activities/${activityId}/round`, { method: "POST", body: JSON.stringify({ action }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useFeedbackVote(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (suggestionId: string) => api(`/api/activities/${activityId}/feedback/vote`, { method: "POST", body: JSON.stringify({ suggestionId }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+export function useFeedbackControl(sessionId: string, activityId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { action: "start" | "stop" | "spotlight"; index?: number }) => api(`/api/activities/${activityId}/feedback`, { method: "POST", body: JSON.stringify(v) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
 export function usePollClose(sessionId: string, activityId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -702,6 +785,15 @@ export function useSetSessionRole(sessionId: string) {
   return useMutation({
     mutationFn: (v: { userId: string; role: "COHOST" | "ACTIVITY_ADMIN" | "MEMBER" }) =>
       api(`/api/sessions/${sessionId}/participants/${v.userId}/role`, { method: "POST", body: JSON.stringify({ role: v.role }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
+  });
+}
+
+export function useTogglePresentation(sessionId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { userId: string; on: boolean }) =>
+      api(`/api/sessions/${sessionId}/participants/${v.userId}/presentation`, { method: "POST", body: JSON.stringify({ on: v.on }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["session", sessionId] }),
   });
 }

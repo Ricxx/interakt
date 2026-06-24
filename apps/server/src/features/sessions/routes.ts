@@ -18,6 +18,12 @@ import { buildQnaPayload } from "../qna/payload.js";
 import { buildDotPayload } from "../dot/payload.js";
 import { buildFistPayload } from "../fist/payload.js";
 import { buildPokerPayload } from "../poker/payload.js";
+import { buildRetroPayload } from "../retro/payload.js";
+import { buildChecklistPayload } from "../checklist/payload.js";
+import { buildRoundPayload } from "../round/payload.js";
+import { buildScoreboardActivityPayload } from "../scoreboard/standings.js";
+import { buildTournamentActivityPayload } from "../tournaments/activity-payload.js";
+import { buildFeedbackPayload } from "../feedback/payload.js";
 import { buildStrawsPayload, strawsResults } from "../straws/payload.js";
 import { buildTeamsPayload, teamsResults } from "../teams/payload.js";
 import { buildSurveyActivityPayload } from "../surveys/respond.js";
@@ -109,7 +115,7 @@ export function sessionRoutes(app: FastifyInstance) {
 
     const [host] = await db.select({ name: users.displayName }).from(users).where(eq(users.id, session.hostId));
     const participants = await db
-      .select({ userId: sessionParticipants.userId, name: users.displayName, node: orgNodes.name, nodeId: users.nodeId, state: sessionParticipants.state, role: sessionParticipants.sessionRole, accessRevoked: sessionParticipants.accessRevoked })
+      .select({ userId: sessionParticipants.userId, name: users.displayName, node: orgNodes.name, nodeId: users.nodeId, state: sessionParticipants.state, role: sessionParticipants.sessionRole, accessRevoked: sessionParticipants.accessRevoked, presentation: sessionParticipants.presentation })
       .from(sessionParticipants)
       .innerJoin(users, eq(users.id, sessionParticipants.userId))
       .leftJoin(orgNodes, eq(users.nodeId, orgNodes.id))
@@ -402,6 +408,19 @@ export function sessionRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
+  // Host/co-host: mark a participant as a TV / presentation watcher (or back). Presentation watchers
+  // are excluded from random-pick pools (randomizer, nomination, team select, draw straws, round-robin).
+  app.post<{ Params: { id: string; userId: string } }>("/api/sessions/:id/participants/:userId/presentation", { preHandler: requireAuth }, async (req, reply) => {
+    const body = z.object({ on: z.boolean() }).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({ error: "invalid_input" });
+    const session = await controlSession(req.params.id, req.currentUser!.id);
+    if (!session) return reply.code(403).send({ error: "not_allowed" });
+    if (req.params.userId === session.hostId) return reply.code(400).send({ error: "host_cannot_present" });
+    await db.update(sessionParticipants).set({ presentation: body.data.on }).where(and(eq(sessionParticipants.sessionId, session.id), eq(sessionParticipants.userId, req.params.userId)));
+    await notifySession(session.id, { type: "session.update", sessionId: session.id });
+    return { ok: true };
+  });
+
   // Creator: reclaim host (e.g. after a disconnect handed it to a co-host).
   app.post<{ Params: { id: string } }>("/api/sessions/:id/reclaim", { preHandler: requireAuth }, async (req, reply) => {
     const me = req.currentUser!;
@@ -559,6 +578,36 @@ async function currentActivity(sessionId: string, meId: string, isHost: boolean,
 
   if (activity.type === "POKER") {
     return { ...base, poker: await buildPokerPayload(activity, meId) };
+  }
+
+  if (activity.type === "RETRO") {
+    return { ...base, retro: await buildRetroPayload(activity, meId, canControl) };
+  }
+
+  if (activity.type === "CHECKLIST") {
+    return { ...base, checklist: await buildChecklistPayload(activity) };
+  }
+
+  if (activity.type === "TIMER") {
+    const cfg = activity.config ?? {};
+    return { ...base, timer: { seconds: cfg.timerSeconds ?? 300, endsAt: cfg.timerEndsAt ?? null, pausedRemaining: cfg.timerPausedRemaining ?? null, running: !!cfg.timerEndsAt } };
+  }
+
+  if (activity.type === "ROUNDROBIN") {
+    return { ...base, round: await buildRoundPayload(activity, meId) };
+  }
+
+  if (activity.type === "SCOREBOARD") {
+    return { ...base, scoreboard: await buildScoreboardActivityPayload(activity.config?.scoreboardId) };
+  }
+
+  if (activity.type === "TOURNAMENT") {
+    return { ...base, tournament: await buildTournamentActivityPayload(activity.config?.tournamentId) };
+  }
+
+  if (activity.type === "FEEDBACK") {
+    const [s] = await db.select({ tenantId: sessions.tenantId }).from(sessions).where(eq(sessions.id, sessionId));
+    return { ...base, feedback: await buildFeedbackPayload(activity, meId, s?.tenantId ?? "") };
   }
 
   if (activity.type === "DRAW_STRAWS") {

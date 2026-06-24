@@ -1,0 +1,1 @@
+ALTER TABLE "stats_events" ADD COLUMN "ref_id" uuid;

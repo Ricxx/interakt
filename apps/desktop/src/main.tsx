@@ -39,10 +39,23 @@ import { EventDetailPage } from "./features/events/detail";
 import { UsagePage } from "./features/usage/page";
 import { TournamentsPage } from "./features/tournaments/page";
 import { TournamentDetailPage } from "./features/tournaments/detail";
+import { ScoreboardsPage } from "./features/scoreboard/page";
+import { ScoreboardDetailPage } from "./features/scoreboard/detail";
+import { SuggestionsPage } from "./features/suggestions/page";
 import { TeamCalendarPage } from "./features/calendar/page";
 import { AchievementsPage } from "./features/achievements/page";
 import { MarketPage } from "./features/market/page";
+import { NotificationsPage } from "./features/notifications/page";
+import { DirectoryPage } from "./features/directory/page";
+import { ActionsPage } from "./features/actions/page";
+import { BroadcastsPage } from "./features/broadcasts/page";
+import { HighlightsPage } from "./features/highlights/page";
+import { ModerationPage } from "./features/moderation/page";
+import { FeedbackInboxPage } from "./features/feedback/page";
+import { StatisticsPage } from "./features/stats/page";
 import { ProfileProvider } from "./features/profile/overlay";
+import { LegalGate } from "./features/legal/gate";
+import { AppLockProvider } from "./features/applock/applock";
 import { initTheme } from "./lib/prefs";
 import "./index.css";
 
@@ -66,6 +79,8 @@ function App() {
 
   return (
     <ProfileProvider>
+      <AppLockProvider>
+      <LegalGate />
       <InviteToasts />
       <Routes>
         <Route element={<Shell />}>
@@ -84,15 +99,26 @@ function App() {
           <Route path="quizzes" element={<QuizzesPage />} />
           <Route path="quizzes/:id" element={<QuizBuilderPage />} />
           <Route path="wellness" element={<WellnessPage />} />
+          <Route path="suggestions" element={<SuggestionsPage />} />
           <Route path="recognition" element={<RecognitionPage />} />
           <Route path="events" element={<EventsPage />} />
           <Route path="events/:id" element={<EventDetailPage />} />
           <Route path="usage" element={<UsagePage />} />
           <Route path="tournaments" element={<TournamentsPage />} />
           <Route path="tournaments/:id" element={<TournamentDetailPage />} />
+          <Route path="scoreboards" element={<ScoreboardsPage />} />
+          <Route path="scoreboards/:id" element={<ScoreboardDetailPage />} />
           <Route path="calendar" element={<TeamCalendarPage />} />
           <Route path="achievements" element={<AchievementsPage />} />
           <Route path="shop" element={<MarketPage />} />
+          <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="directory" element={<DirectoryPage />} />
+          <Route path="actions" element={<ActionsPage />} />
+          <Route path="announcements" element={<BroadcastsPage />} />
+          <Route path="highlights" element={<HighlightsPage />} />
+          <Route path="moderation" element={<ModerationPage />} />
+          {me.role === "TENANT_ADMIN" && <Route path="feedback" element={<FeedbackInboxPage />} />}
+          <Route path="statistics" element={<StatisticsPage />} />{/* access enforced server-side (admins + stats.view managers) */}
           <Route path="requests" element={<RequestsPage />} />
           <Route path="boards" element={<BoardsPage />} />
           <Route path="boards/:id" element={<BoardDetailPage />} />
@@ -105,6 +131,7 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
+      </AppLockProvider>
     </ProfileProvider>
   );
 }

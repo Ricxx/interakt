@@ -10,6 +10,7 @@ import { recordAudit } from "../../lib/audit.js";
 import { can } from "../../lib/capabilities.js";
 import { env } from "../../env.js";
 import { requireAuth, requireRole, setSession } from "../../auth.js";
+import { anonymizeUser } from "../retention/anonymize.js";
 
 const authLimit = { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } };
 const adminOnly = { preHandler: requireRole("TENANT_ADMIN") };
@@ -41,6 +42,7 @@ export function memberRoutes(app: FastifyInstance) {
         role: users.role,
         jobTitle: users.jobTitle,
         status: users.status,
+        erasedAt: users.erasedAt,
         nodeId: users.nodeId,
         node: orgNodes.name,
       })
@@ -76,6 +78,39 @@ export function memberRoutes(app: FastifyInstance) {
       return { ok: true };
     });
   }
+
+  // Offboard a member (departed staff): disable their account and start the PII-retention clock.
+  // Reversible via reactivate — this does NOT erase anything.
+  app.post<{ Params: { id: string } }>("/api/members/:id/deactivate", adminOnly, async (req, reply) => {
+    const me = req.currentUser!;
+    const [u] = await db.select().from(users).where(and(eq(users.id, req.params.id), eq(users.tenantId, me.tenantId)));
+    if (!u) return reply.code(404).send({ error: "not_found" });
+    if (u.id === me.id) return reply.code(400).send({ error: "cannot_deactivate_self" });
+    await db.update(users).set({ status: "DISABLED", deactivatedAt: new Date() }).where(eq(users.id, u.id));
+    await recordAudit({ action: "member.deactivated", tenantId: me.tenantId, actorId: me.id, meta: { memberId: u.id } });
+    return { ok: true };
+  });
+  app.post<{ Params: { id: string } }>("/api/members/:id/reactivate", adminOnly, async (req, reply) => {
+    const me = req.currentUser!;
+    const [u] = await db.select().from(users).where(and(eq(users.id, req.params.id), eq(users.tenantId, me.tenantId)));
+    if (!u) return reply.code(404).send({ error: "not_found" });
+    if (u.erasedAt) return reply.code(400).send({ error: "already_erased" }); // can't un-erase
+    await db.update(users).set({ status: "ACTIVE", deactivatedAt: null }).where(eq(users.id, u.id));
+    await recordAudit({ action: "member.reactivated", tenantId: me.tenantId, actorId: me.id, meta: { memberId: u.id } });
+    return { ok: true };
+  });
+
+  // Right-to-erasure: scrub the member's personal data (keeps the row so audit/ledger stay intact).
+  // Irreversible. Anything touching identity → flagged for a careful read, per CLAUDE.md.
+  app.post<{ Params: { id: string } }>("/api/members/:id/erase", adminOnly, async (req, reply) => {
+    const me = req.currentUser!;
+    const [u] = await db.select().from(users).where(and(eq(users.id, req.params.id), eq(users.tenantId, me.tenantId)));
+    if (!u) return reply.code(404).send({ error: "not_found" });
+    if (u.id === me.id) return reply.code(400).send({ error: "cannot_erase_self" });
+    const done = await anonymizeUser(u.id);
+    if (done) await recordAudit({ action: "member.erased", tenantId: me.tenantId, actorId: me.id, meta: { memberId: u.id } });
+    return { ok: true, erased: done };
+  });
 
   // Admin: set (or clear) a member's home department/node.
   app.patch<{ Params: { id: string } }>("/api/members/:id", adminOnly, async (req, reply) => {

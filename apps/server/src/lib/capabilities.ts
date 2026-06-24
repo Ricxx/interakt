@@ -28,12 +28,16 @@ export const CAPABILITIES = [
   { key: "event.manage", category: "Events", label: "Run org-wide events & theme days", scoped: true },
   { key: "tournament.manage", category: "Events", label: "Run org-wide tournaments", scoped: true },
   { key: "reward.manage", category: "Events", label: "Set daily check-in rewards", scoped: false },
+  { key: "suggestion.manage", category: "Feedback", label: "Triage & respond to the suggestion / complaint box", scoped: true },
+  { key: "broadcast.send", category: "Comms", label: "Send announcements (reach sets how wide)", scoped: true },
   { key: "usage.view", category: "Governance", label: "View the team usage log", scoped: true },
+  { key: "stats.view", category: "Governance", label: "View statistics (reach sets org-wide vs. your team)", scoped: true },
   { key: "member.approve", category: "Governance", label: "Approve members & requests", scoped: false },
+  { key: "content.moderate", category: "Governance", label: "Review reported photos & posts", scoped: false },
   { key: "permission.grant", category: "Governance", label: "Manage permission groups", scoped: false },
 ] as const;
 
-export const CAPABILITY_CATEGORIES = ["Sessions", "Tasks", "Repository", "Boards", "Lists", "Surveys", "Recognition", "Events", "Governance"] as const;
+export const CAPABILITY_CATEGORIES = ["Sessions", "Tasks", "Repository", "Boards", "Lists", "Surveys", "Recognition", "Events", "Feedback", "Comms", "Governance"] as const;
 
 // Reach is RELATIVE to where the user sits in the org tree — structure-agnostic, so it works for any
 // company shape/naming. SELF = no authority over org nodes; NODE = the subtree rooted at the user's
